@@ -1,2 +1,0 @@
-# Apexaccreditpro.com
-Accreditation Platform
