@@ -430,6 +430,45 @@ export default function VerifyAccreditation() {
     return loc === "both" || loc === "qr";
   };
 
+  // APX-Fix: Unified Allocated Sports Logic for Filtering and Display
+  const allocatedSports = useMemo(() => {
+    if (!data) return [];
+    const selectedSports = Array.isArray(data.selected_sports) ? data.selected_sports : [];
+    const zoneCodes = (data.zone_code || "").split(",").map(z => z.trim()).filter(Boolean);
+    
+    // Find zone names for the assigned codes (which often correspond to sports)
+    const zoneSportNames = zoneCodes.map(code => {
+      const zone = allZones.find(z => String(z.code) === code);
+      return zone ? zone.name : null;
+    }).filter(Boolean);
+
+    // Combine, trim, and de-duplicate case-insensitively
+    const combined = [];
+    const seen = new Set();
+    [...selectedSports, ...zoneSportNames].forEach(s => {
+      if (!s) return;
+      const normalized = s.trim().toUpperCase();
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        combined.push(s.trim());
+      }
+    });
+    return combined;
+  }, [data, allZones]);
+
+  // Filter Technical Documents based on Athlete's Allocated Sports
+  const visibleTechnicalDocs = useMemo(() => {
+    if (!technicalDocs) return [];
+    return technicalDocs.filter(doc => {
+      // If document is "General" or has no sport tag, show to everyone
+      if (!doc.sport || doc.sport === "General") return true;
+      
+      // Check if the document's sport is in the athlete's allocated sports
+      const normalizedDocSport = doc.sport.trim().toUpperCase();
+      return allocatedSports.some(s => s.trim().toUpperCase() === normalizedDocSport);
+    });
+  }, [technicalDocs, allocatedSports]);
+
   const containerVariants = {
     hidden: { opacity: 0, y: 20 },
     visible: {
@@ -700,48 +739,23 @@ export default function VerifyAccreditation() {
                       </div>
 
                       {/* APX-Fix: Auto-adjusting Allocated Sports (Merged and De-duplicated) */}
-                      {(() => {
-                        const selectedSports = Array.isArray(data.selected_sports) ? data.selected_sports : [];
-                        const zoneCodes = (data.zone_code || "").split(",").map(z => z.trim()).filter(Boolean);
-                        
-                        // Find zone names for the assigned codes
-                        const zoneSportNames = zoneCodes.map(code => {
-                          const zone = allZones.find(z => String(z.code) === code);
-                          return zone ? zone.name : null;
-                        }).filter(Boolean);
-
-                        // Combine, trim, and de-duplicate case-insensitively
-                        const combined = [];
-                        const seen = new Set();
-                        [...selectedSports, ...zoneSportNames].forEach(s => {
-                          if (!s) return;
-                          const normalized = s.trim().toUpperCase();
-                          if (!seen.has(normalized)) {
-                            seen.add(normalized);
-                            combined.push(s.trim());
-                          }
-                        });
-                        
-                        if (combined.length === 0) return null;
-
-                        return (
-                          <div className="flex flex-col items-start lg:items-end gap-1.5 shrink-0 max-w-full lg:max-w-[60%]">
-                            <div className="flex items-center gap-1.5 lg:justify-end">
-                               <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Allocated Sports</span>
-                            </div>
-                            <div className="flex flex-wrap justify-start lg:justify-end gap-1.5">
-                              {combined.map((sport, idx) => (
-                                <div 
-                                  key={idx} 
-                                  className="px-2.5 py-1 bg-gradient-to-br from-[#2D4A9E]/5 to-blue-500/5 border border-[#2D4A9E]/10 rounded-lg shadow-sm flex items-center group transition-all hover:border-[#2D4A9E]/20"
-                                >
-                                  <span className="text-[10px] font-black text-[#2D4A9E] uppercase tracking-tight whitespace-nowrap">{sport}</span>
-                                </div>
-                              ))}
-                            </div>
+                      {allocatedSports.length > 0 && (
+                        <div className="flex flex-col items-start lg:items-end gap-1.5 shrink-0 max-w-full lg:max-w-[60%]">
+                          <div className="flex items-center gap-1.5 lg:justify-end">
+                             <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Allocated Sports</span>
                           </div>
-                        );
-                      })()}
+                          <div className="flex flex-wrap justify-start lg:justify-end gap-1.5">
+                            {allocatedSports.map((sport, idx) => (
+                              <div 
+                                key={idx} 
+                                className="px-2.5 py-1 bg-gradient-to-br from-[#2D4A9E]/5 to-blue-500/5 border border-[#2D4A9E]/10 rounded-lg shadow-sm flex items-center group transition-all hover:border-[#2D4A9E]/20"
+                              >
+                                <span className="text-[10px] font-black text-[#2D4A9E] uppercase tracking-tight whitespace-nowrap">{sport}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -939,11 +953,11 @@ export default function VerifyAccreditation() {
                      </div>
                    </div>
                  )}
-                 {technicalDocs.length > 0 && (
+                 {visibleTechnicalDocs.length > 0 && (
                     <div className="space-y-3">
                       <h4 className="text-[10px] font-black text-white/40 uppercase tracking-[0.2em] px-2">Result Documents</h4>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {technicalDocs.map((doc, idx) => (
+                        {visibleTechnicalDocs.map((doc, idx) => (
                           <motion.a
                             key={idx}
                             href={doc.url}
@@ -958,7 +972,7 @@ export default function VerifyAccreditation() {
                                 <Download className="w-4 h-4 text-blue-400" />
                               </div>
                               <div className="flex flex-col">
-                                <span className="text-[9px] font-black text-white/30 uppercase leading-none mb-1">Result Profile</span>
+                                <span className="text-[9px] font-black text-white/30 uppercase leading-none mb-1">Result Profile</span> {doc.sport && doc.sport !== "General" && <span className="text-[8px] ml-2 font-black text-blue-400 bg-blue-400/10 border border-blue-400/20 px-1 rounded whitespace-nowrap">{doc.sport}</span>}
                                 <span className="text-xs font-bold text-white/90 truncate max-w-[140px] uppercase leading-tight">{doc.name}</span>
                               </div>
                             </div>
