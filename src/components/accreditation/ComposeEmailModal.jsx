@@ -31,8 +31,9 @@ export default function ComposeEmailModal({
       // Try to load saved custom template
       const loadTemplate = async () => {
         const template = await getEmailTemplate("custom");
+        const r = recipients.length === 1 ? recipients[0] : null;
+        
         if (template && template.body) {
-          const r = recipients.length === 1 ? recipients[0] : null;
           const placeholderVars = {
             name: r ? `${r.firstName} ${r.lastName}` : "Participant",
             firstName: r?.firstName || "Participant",

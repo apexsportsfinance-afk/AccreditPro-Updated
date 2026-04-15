@@ -2,9 +2,11 @@ import React, { useEffect } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import { useAuth } from "../../contexts/AuthContext";
+import { useLayout } from "../../contexts/LayoutContext";
 
 export default function AdminLayout() {
   const { isAuthenticated, loading } = useAuth();
+  const { sidebarCollapsed } = useLayout();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -32,8 +34,8 @@ export default function AdminLayout() {
         <div className="absolute bottom-0 left-0 w-[500px] h-[500px] bg-ocean-500/5 rounded-full blur-3xl" />
       </div>
       <Sidebar />
-      <main className="ml-20 lg:ml-[280px] min-h-screen transition-all duration-300 relative z-10">
-        <div className="p-6 lg:p-8">
+      <main className={`${sidebarCollapsed ? "ml-20" : "ml-[280px]"} min-h-screen transition-all duration-300 relative z-10`}>
+        <div className="p-6 lg:p-8 page-container">
           <Outlet />
         </div>
       </main>

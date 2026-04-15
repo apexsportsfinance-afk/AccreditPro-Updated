@@ -1,8 +1,8 @@
+import React from "react";
+
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
-import React from "react";
-import { createRoot } from "react-dom/client";
-import { CardInner } from "./AccreditationCardPreview";
+import JSZip from "jszip";
 
 const CARD_W_PX = 320;
 const CARD_H_PX = 454;
@@ -101,26 +101,20 @@ const inlineAllImages = async (container) => {
  * The QR is set via React state (qrDataUrl) so we poll for
  * the img[data-qr-code] to have a valid data: src.
  */
-const waitForQR = (container, timeoutMs = 8000) =>
+const waitForReady = (container, timeoutMs = 8000) =>
   new Promise((resolve) => {
     const start = Date.now();
     const check = () => {
-      const qrImg = container.querySelector("img[data-qr-code='true']");
-      if (qrImg && qrImg.getAttribute("src")?.startsWith("data:")) {
-        return resolve(true);
-      }
-      if (Date.now() - start > timeoutMs) {
-        // QR didn't load in time — continue anyway so card still exports
-        console.warn("[cardExport] QR code did not appear within timeout, exporting without QR.");
-        return resolve(false);
-      }
+      const frontEl = container.querySelector("[data-qr-ready='true']");
+      if (frontEl) return resolve(true);
+      if (Date.now() - start > timeoutMs) return resolve(false);
       setTimeout(check, 80);
     };
     check();
   });
 
-const renderOffscreenCard = (accreditation, event, zones) =>
-  new Promise((resolve, reject) => {
+const renderOffscreenCard = async (accreditation, event, zones) =>
+  new Promise(async (resolve, reject) => {
     const SUFFIX = `_cap_${Date.now()}`;
 
     const container = document.createElement("div");
@@ -136,6 +130,11 @@ const renderOffscreenCard = (accreditation, event, zones) =>
       "z-index:-1;" +
       "pointer-events:none;";
     document.body.appendChild(container);
+
+    const [{ createRoot }, { CardInner }] = await Promise.all([
+      import("react-dom/client"),
+      import("./AccreditationCardPreview")
+    ]);
 
     const root = createRoot(container);
 
@@ -166,21 +165,17 @@ const renderOffscreenCard = (accreditation, event, zones) =>
       const frontEl = document.getElementById(`accreditation-front-card${SUFFIX}`);
       const backEl = document.getElementById(`accreditation-back-card${SUFFIX}`);
 
-      if (!frontEl || frontEl.getBoundingClientRect().width === 0) {
-        return setTimeout(poll, 100);
+      if (!frontEl || !frontEl.dataset.qrReady) {
+        return setTimeout(poll, 50);
       }
 
-      // Wait specifically for QR code to be generated before capturing
-      await waitForQR(container, 8000);
-
-      await inlineAllImages(container);
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      await new Promise((r) => setTimeout(r, 300));
+      // Final minor wait for layout stability (fonts, etc)
+      await new Promise((r) => setTimeout(r, 100));
 
       resolve({ frontEl, backEl, cleanup });
     };
 
-    setTimeout(poll, 100);
+    setTimeout(poll, 50);
   });
 
 const captureEl = async (el, scale) => {
@@ -205,45 +200,29 @@ const captureEl = async (el, scale) => {
   return canvas;
 };
 
-export const buildPDF = async (accreditation, event, zones, scale, sizeKey) => {
-  const size = PDF_SIZES[sizeKey] || PDF_SIZES.a6;
-  const isLandscape = size.width > size.height;
-
+export const buildPDF = async (accreditation, event, zones, scale = 2, sizeKey = "card") => {
   const { frontEl, backEl, cleanup } = await renderOffscreenCard(accreditation, event, zones);
-
-  const pdf = new jsPDF({
-    orientation: isLandscape ? "landscape" : "portrait",
-    unit: "mm",
-    format: [size.width, size.height],
-    compress: true,
-  });
-
+  
   try {
-    const frontCanvas = await captureEl(frontEl, scale);
-    pdf.addImage(
-      frontCanvas.toDataURL("image/png", 1.0),
-      "PNG",
-      0, 0, size.width, size.height,
-      undefined,
-      "FAST"
-    );
+    const { canvas: frontCanvas, width, height } = await captureEl(frontEl, scale);
+    const pdf = new jsPDF({
+      orientation: width > height ? "l" : "p",
+      unit: "pt",
+      format: [width, height]
+    });
+
+    pdf.addImage(frontCanvas.toDataURL("image/png"), "PNG", 0, 0, width, height);
 
     if (backEl) {
-      pdf.addPage([size.width, size.height], isLandscape ? "landscape" : "portrait");
-      const backCanvas = await captureEl(backEl, scale);
-      pdf.addImage(
-        backCanvas.toDataURL("image/png", 1.0),
-        "PNG",
-        0, 0, size.width, size.height,
-        undefined,
-        "FAST"
-      );
+      const { canvas: backCanvas, width: bw, height: bh } = await captureEl(backEl, scale);
+      pdf.addPage([bw, bh]);
+      pdf.addImage(backCanvas.toDataURL("image/png"), "PNG", 0, 0, bw, bh);
     }
+
+    return pdf;
   } finally {
     cleanup();
   }
-
-  return pdf;
 };
 
 const captureCardDataUrls = async (accreditation, event, zones, scale) => {
@@ -404,12 +383,10 @@ export const bulkDownloadPDFs = async (
 ) => {
   if (!accreditations || accreditations.length === 0) return;
 
-  const CONCURRENCY = 3;
-  const scale = IMAGE_SIZES["4k"].scale;
-
+  const CONCURRENCY = 3; // HTML2Canvas is heavy, keep concurrency low
   try {
-    const JSZip = (await import("jszip")).default;
-    const zip = new JSZip();
+    const JSZipConstructor = typeof JSZip === 'function' ? JSZip : (JSZip.default || JSZip);
+    const zip = new JSZipConstructor();
     let completed = 0;
     let failed = 0;
 
@@ -418,14 +395,14 @@ export const bulkDownloadPDFs = async (
 
       await Promise.all(batch.map(async (acc) => {
         try {
-          const pdf = await buildPDF(acc, event, zones, scale, sizeKey);
+          const pdf = await buildPDF(acc, event, zones, 2);
           const pdfBlob = pdf.output("blob");
-          const fileName = `${acc.firstName || "Unknown"}_${acc.lastName || "Unknown"}_${acc.badgeNumber || acc.id || i}.pdf`;
+          const fileName = `${acc.firstName || "Unknown"}_${acc.lastName || "Unknown"}_Accreditation.pdf`;
           zip.file(fileName, pdfBlob);
           completed++;
           onProgress?.(completed, accreditations.length, failed);
         } catch (err) {
-          console.warn(`Failed PDF for ${acc.firstName} ${acc.lastName}:`, err);
+          console.warn(`Failed PDF for ${acc.firstName}:`, err);
           failed++;
           onProgress?.(completed, accreditations.length, failed);
         }

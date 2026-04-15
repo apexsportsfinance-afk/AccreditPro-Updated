@@ -7,7 +7,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Nunito", "sans-serif"],
+        sans: ["Inter", "Nunito", "sans-serif"],
+        serif: ["Merriweather", "serif"],
         mono: ["JetBrains Mono", "monospace"]
       },
       colors: {

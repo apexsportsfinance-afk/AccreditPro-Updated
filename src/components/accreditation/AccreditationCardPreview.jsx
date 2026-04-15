@@ -102,7 +102,7 @@ const useCountryNamePng = (name, fontSize = 11) => {
     canvas.height = height * scale;
     const ctx = canvas.getContext("2d");
     ctx.scale(scale, scale);
-    ctx.fillStyle = "#1e40af";
+    ctx.fillStyle = "#000000";
     ctx.font = `bold ${fontSize}px ${CARD_FONT}`;
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
@@ -296,7 +296,7 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
         {/* BODY */}
         <div style={{ display: "flex", flex: 1, padding: "10px 12px 0px 12px", position: "relative", zIndex: 10, minHeight: 0, backgroundColor: "white", overflow: "hidden", alignItems: "flex-start" }}>
           {/* LEFT: Photo + ID */}
-          <div style={{ width: "110px", display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+          <div style={{ width: "110px", display: "flex", flexDirection: "column", alignItems: "flex-start", flexShrink: 0 }}>
             <div style={{ width: "100px", height: "120px", border: "2px solid #cbd5e1", padding: "2px", backgroundColor: "white", boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)", flexShrink: 0 }}>
               {accreditation?.photoUrl ? (
                 <img src={accreditation.photoUrl} alt="User" style={{ width: "100%", height: "100%", objectFit: "cover" }} crossOrigin="anonymous" />
@@ -308,12 +308,12 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
                 </div>
               )}
             </div>
-            <div style={{ marginTop: "5px", textAlign: "left", width: "100%" }}>
+            <div style={{ marginTop: "6px", paddingLeft: "4px", textAlign: "left", width: "100%" }}>
               <p style={{ fontSize: `${CARD_FONT_SIZE}px`, color: "#334155", ...cardFont, lineHeight: 1.4, margin: 0 }}>
-                <strong style={{ fontWeight: "bold" }}>ID</strong> {idNumber}
+                <strong style={{ fontWeight: "bold" }}>ID:</strong> {idNumber}
               </p>
               <p style={{ fontSize: `${CARD_FONT_SIZE}px`, color: "#334155", ...cardFont, lineHeight: 1.4, margin: 0 }}>
-                <strong style={{ fontWeight: "bold" }}>BADGE</strong> <span style={{ fontWeight: "normal" }}>{accreditation?.badgeNumber || "---"}</span>
+                <strong style={{ fontWeight: "bold" }}>BADGE:</strong> <span style={{ fontWeight: "normal" }}>{accreditation?.badgeNumber || "---"}</span>
               </p>
             </div>
           </div>
@@ -324,7 +324,7 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
               {fullName}
             </h2>
             <p style={{ fontSize: `${CARD_FONT_SIZE}px`, color: "#334155", marginTop: "7px", lineHeight: 1.3, wordBreak: "break-word", ...cardFont }}>
-              {accreditation?.club || ""}
+              {accreditation?.club?.replace(/\s*\(.*?\)\s*/g, " ").trim() || ""}
             </p>
             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px", fontSize: `${CARD_FONT_SIZE}px`, color: "#475569", ...cardFont, flexWrap: "wrap" }}>
               <span style={{ fontWeight: 500 }}>{accreditation?.role || "Participant"}</span>
@@ -333,27 +333,46 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
               {isAthlete && age !== null && (
                 <>
                   <span style={{ color: "#cbd5e1" }}>|</span>
-                  <span style={{ fontWeight: "bold", color: "#1e40af" }}>Age: {age}</span>
+                  <span style={{ fontWeight: "bold", color: "#000000" }}>Age: {age}</span>
                 </>
               )}
             </div>
-            <div style={{ marginTop: "8px", height: "26px", display: "flex", alignItems: "center", gap: "6px" }}>
-              {countryData?.flag && (
-                <img
-                  src={`https://flagcdn.com/w80/${countryData.flag}.png`}
-                  alt="Flag"
-                  style={{ width: "38px", height: "26px", minWidth: "38px", minHeight: "26px", maxWidth: "38px", maxHeight: "26px", borderRadius: "3px", boxShadow: "0 1px 3px rgba(0,0,0,0.1)", objectFit: "cover", border: "1px solid #e2e8f0", flexShrink: 0 }}
-                  crossOrigin="anonymous"
-                />
-              )}
-              {countryNameUrl ? (
-                <img src={countryNameUrl} alt={countryName} style={{ height: "22px", maxWidth: "120px", objectFit: "contain", objectPosition: "left" }} />
-              ) : (
-                <span style={{ fontSize: `${countryFontSize}px`, fontWeight: "bold", color: "#1e40af", lineHeight: "22px", ...cardFont }}>
-                  {countryName}
-                </span>
-              )}
-            </div>
+            {/* Dynamic Flag & Country Name */}
+            {(() => {
+              const flagWidth = 62;
+              const flagHeight = 40;
+              const nameSize = 15;
+
+              return (
+                <div style={{ marginTop: "18px", display: "flex", alignItems: "center", gap: "12px" }}>
+                  {countryData?.flag && (
+                    <img
+                      src={`https://flagcdn.com/w160/${countryData.flag}.png`}
+                      alt="Flag"
+                      style={{
+                        width: `${flagWidth}px`,
+                        height: `${flagHeight}px`,
+                        minWidth: `${flagWidth}px`,
+                        minHeight: `${flagHeight}px`,
+                        borderRadius: "3px",
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                        objectFit: "cover",
+                        border: "1px solid #e2e8f0",
+                        flexShrink: 0
+                      }}
+                      crossOrigin="anonymous"
+                    />
+                  )}
+                  {countryNameUrl ? (
+                    <img src={countryNameUrl} alt={countryName} style={{ height: `${nameSize + 4}px`, maxWidth: "120px", objectFit: "contain", objectPosition: "left" }} />
+                  ) : (
+                    <span style={{ fontSize: `${nameSize}px`, fontWeight: "bold", color: "#000000", lineHeight: "1.2", ...cardFont }}>
+                      {countryName}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -375,8 +394,9 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
           <div style={{
             flex: 1,
             display: "flex",
-            alignItems: "center",
+            alignItems: "flex-end",
             justifyContent: "flex-end",
+            paddingBottom: "4px",
             gap: zoneCodes.length <= 4 ? "6px" : zoneCodes.length <= 6 ? "4px" : "3px",
             flexWrap: "nowrap",
             height: "100%"

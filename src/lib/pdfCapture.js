@@ -29,10 +29,9 @@ const waitForQRInElement = (element, timeoutMs = 8000) =>
         return resolve(true);
       }
       if (Date.now() - start > timeoutMs) {
-        console.warn("[pdfCapture] QR code did not appear within timeout.");
         return resolve(false);
       }
-      setTimeout(check, 80);
+      setTimeout(check, 30); // Faster polling
     };
     check();
   });
@@ -41,7 +40,7 @@ const waitForQRInElement = (element, timeoutMs = 8000) =>
  * Capture a visible DOM element using html2canvas.
  * Uses cloneNode to avoid detaching the live React element.
  */
-const captureElement = async (elementId, scale = 4) => {
+const captureElement = async (elementId, scale = 6) => {
   const element = document.getElementById(elementId);
   if (!element) throw new Error(`Element #${elementId} not found`);
 
@@ -85,8 +84,8 @@ const captureElement = async (elementId, scale = 4) => {
   ));
 
   await document.fonts.ready;
-  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-  await new Promise(r => setTimeout(r, 200));
+  await new Promise(r => requestAnimationFrame(r));
+  await new Promise(r => setTimeout(r, 60));
 
   const canvas = await html2canvas(element, {
     scale,
@@ -105,7 +104,7 @@ const captureElement = async (elementId, scale = 4) => {
 
 export const downloadCapturedPDF = async (frontId, backId, fileName, sizeKey = "card") => {
   try {
-    const { canvas: frontCanvas, width, height } = await captureElement(frontId, 4);
+    const { canvas: frontCanvas, width, height } = await captureElement(frontId, 6);
     const pdfWidth = width;
     const pdfHeight = height;
 
@@ -127,7 +126,7 @@ export const downloadCapturedPDF = async (frontId, backId, fileName, sizeKey = "
     );
 
     if (backId) {
-      const { canvas: backCanvas, width: bw, height: bh } = await captureElement(backId, 4);
+      const { canvas: backCanvas, width: bw, height: bh } = await captureElement(backId, 6);
       pdf.addPage([bw, bh]);
       pdf.addImage(
         backCanvas.toDataURL("image/png"),
@@ -146,7 +145,7 @@ export const downloadCapturedPDF = async (frontId, backId, fileName, sizeKey = "
 };
 
 export const openCapturedPDFInTab = async (frontId, backId, sizeKey = "card") => {
-  const { canvas, width, height } = await captureElement(frontId, 4);
+  const { canvas, width, height } = await captureElement(frontId, 6);
 
   const pdf = new jsPDF({
     orientation: width > height ? "l" : "p",
@@ -157,7 +156,7 @@ export const openCapturedPDFInTab = async (frontId, backId, sizeKey = "card") =>
   pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, width, height);
 
   if (backId) {
-    const { canvas: bc, width: bw, height: bh } = await captureElement(backId, 4);
+    const { canvas: bc, width: bw, height: bh } = await captureElement(backId, 2);
     pdf.addPage([bw, bh]);
     pdf.addImage(bc.toDataURL("image/png"), "PNG", 0, 0, bw, bh);
   }
@@ -166,7 +165,7 @@ export const openCapturedPDFInTab = async (frontId, backId, sizeKey = "card") =>
 };
 
 export const getCapturedPDFBlob = async (frontId, backId, sizeKey = "card") => {
-  const { canvas, width, height } = await captureElement(frontId, 4);
+  const { canvas, width, height } = await captureElement(frontId, 6);
 
   const pdf = new jsPDF({
     orientation: width > height ? "l" : "p",
@@ -178,7 +177,7 @@ export const getCapturedPDFBlob = async (frontId, backId, sizeKey = "card") => {
   pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, width, height);
 
   if (backId) {
-    const { canvas: bc, width: bw, height: bh } = await captureElement(backId, 4);
+    const { canvas: bc, width: bw, height: bh } = await captureElement(backId, 2);
     pdf.addPage([bw, bh]);
     pdf.addImage(bc.toDataURL("image/png"), "PNG", 0, 0, bw, bh);
   }

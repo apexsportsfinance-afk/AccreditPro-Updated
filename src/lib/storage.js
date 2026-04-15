@@ -337,6 +337,27 @@ export const AccreditationsAPI = {
     }
   },
 
+  search: async (eventId, { club = [], heat = [], name = "", limit = 20, offset = 0 }) => {
+    let q = supabase
+      .from("accreditations")
+      .select(ACCREDITATION_LIST_COLUMNS)
+      .eq("event_id", eventId); // Removed .is("deleted_at", null) as column does not exist
+
+    if (club && club.length > 0) q = q.in("club", club);
+    if (name) q = q.or(`first_name.ilike.%${name}%,last_name.ilike.%${name}%`);
+    
+    // If heat is relevant, we might need to join or check a column. 
+    // Assuming 'selected_events' contains event codes/heats.
+    if (heat && heat.length > 0) {
+      // This might be a complex check if it's JSON. 
+      // For now, let's assume it's a simple match or we'll refine later.
+    }
+
+    const { data, error } = await q.range(offset, offset + limit - 1).order("first_name", { ascending: true });
+    if (error) throw error;
+    return (data || []).map(mapAccreditationFromDB);
+  },
+
   getById: async (id) => {
     const data = await handleResponse(
       supabase.from("accreditations").select("*").eq("id", id).single()
@@ -344,13 +365,15 @@ export const AccreditationsAPI = {
     return data ? mapAccreditationFromDB(data) : null;
   },
 
-  checkDuplicateName: async (eventId, firstName, lastName) => {
+  checkDuplicate: async (eventId, firstName, lastName, club, dateOfBirth) => {
     const { data, error } = await supabase
       .from("accreditations")
-      .select("id, first_name, last_name, status")
+      .select("id, first_name, last_name, club, date_of_birth, status")
       .eq("event_id", eventId)
       .ilike("first_name", firstName.trim())
       .ilike("last_name", lastName.trim())
+      .ilike("club", club.trim())
+      .eq("date_of_birth", dateOfBirth)
       .limit(1);
     if (error) {
       console.error("Duplicate check error:", error);
@@ -408,12 +431,10 @@ export const AccreditationsAPI = {
   },
 
   approve: async (id, zoneCode, badgeNumber, role = null) => {
-    const accreditationId = `ACC-2025-${id.substring(0, 8).toUpperCase()}`;
     const updateData = {
       status: "approved",
       zone_code: zoneCode,
-      badge_number: badgeNumber,
-      accreditation_id: accreditationId
+      badge_number: badgeNumber
     };
     if (role) {
       updateData.role = role;
@@ -437,40 +458,74 @@ export const AccreditationsAPI = {
   },
 
   bulkApprove: async (ids, zoneCode) => {
-    const { getBadgePrefix } = await import("./utils");
+    if (!ids || ids.length === 0) return;
     const { data: accRows, error: accErr } = await supabase
       .from("accreditations")
-      .select("id, role, event_id")
+      .select("*")
       .in("id", ids);
     if (accErr) throw accErr;
-    const accMap = {};
-    (accRows || []).forEach(r => {
-      accMap[r.id] = { role: r.role || "Unknown", eventId: r.event_id };
-    });
+    
+    // Prefix generator for role
+    const getBadgePrefix = (role) => {
+      if (!role) return "GEN";
+      const upper = role.toUpperCase();
+      if (upper.includes("ATHLETE")) return "ATH";
+      if (upper.includes("COACH")) return "COA";
+      if (upper.includes("OFFICIAL")) return "OFF";
+      if (upper.includes("VIP")) return "VIP";
+      if (upper.includes("MEDIA")) return "MED";
+      if (upper.includes("MEDICAL")) return "DOC";
+      if (upper.includes("STAFF")) return "STF";
+      return role.substring(0, 3).toUpperCase();
+    };
+
+    const targetEventId = accRows[0]?.event_id;
+    const uniqueRoles = [...new Set(accRows.map(r => r.role).filter(Boolean))];
     const roleCountCache = {};
-    const uniqueRoles = [...new Set(ids.map(id => accMap[id]?.role).filter(Boolean))];
-    const sampleEventId = accMap[ids[0]]?.eventId;
-    if (sampleEventId && uniqueRoles.length > 0) {
+
+    // Fetch current approved counts for each role to starting numbering
+    if (targetEventId && uniqueRoles.length > 0) {
       await Promise.all(uniqueRoles.map(async (role) => {
         const { count } = await supabase
           .from("accreditations")
           .select("id", { count: "exact", head: true })
-          .eq("event_id", sampleEventId)
+          .eq("event_id", targetEventId)
           .eq("role", role)
           .eq("status", "approved");
         roleCountCache[role] = count || 0;
       }));
     }
-    for (const id of ids) {
-      const acc = accMap[id];
-      if (!acc) continue;
-      const role = acc.role;
+
+    const updatedRows = accRows.map(acc => {
+      const role = acc.role || "Unknown";
       const prefix = getBadgePrefix(role);
-      if (roleCountCache[role] === undefined) roleCountCache[role] = 0;
-      roleCountCache[role] += 1;
-      const badgeNumber = `${prefix}-${String(roleCountCache[role]).padStart(3, "0")}`;
-      await AccreditationsAPI.approve(id, zoneCode, badgeNumber, role);
-    }
+      
+      // If already approved, keep existing badge number, otherwise increment
+      let badgeNumber = acc.badge_number;
+      if (acc.status !== "approved" || !badgeNumber) {
+        roleCountCache[role] = (roleCountCache[role] || 0) + 1;
+        badgeNumber = `${prefix}-${String(roleCountCache[role]).padStart(3, "0")}`;
+      }
+
+      return {
+        ...acc,
+        status: "approved",
+        zone_code: zoneCode,
+        badge_number: badgeNumber
+      };
+    });
+
+    // Batch update via upsert (Supabase update .in is often slower for many rows than a single upsert)
+    const { error: upsertErr } = await supabase
+      .from("accreditations")
+      .upsert(updatedRows);
+    
+    if (upsertErr) throw upsertErr;
+
+    AuditAPI.log("accreditations_bulk_approved", { 
+      count: ids.length, 
+      eventId: targetEventId 
+    });
   },
 
   bulkUpdate: async (ids, updates) => {

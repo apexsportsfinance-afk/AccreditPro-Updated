@@ -45,7 +45,6 @@ export const sendApprovalEmail = async ({
   pdfFileName = null
 }) => {
   try {
-    console.log("[Email] Sending approval email to:", to);
 
     const template = await getEmailTemplate("approved");
     let customBody = null;
@@ -100,7 +99,6 @@ export const sendApprovalEmail = async ({
       return { success: false, error: data.error || "Failed to send approval email" };
     }
 
-    console.log("[Email] Approval email sent successfully:", data);
     return { success: true, data };
   } catch (error) {
     console.error("[Email] Email service error:", error);
@@ -117,7 +115,6 @@ export const sendRejectionEmail = async ({
   resubmitUrl
 }) => {
   try {
-    console.log("[Email] Sending rejection email to:", to);
 
     const template = await getEmailTemplate("rejected");
     let customBody = null;
@@ -169,7 +166,6 @@ export const sendRejectionEmail = async ({
       return { success: false, error: data.error || "Failed to send rejection email" };
     }
 
-    console.log("[Email] Rejection email sent successfully:", data);
     return { success: true, data };
   } catch (error) {
     console.error("[Email] Email service error:", error);
@@ -186,7 +182,6 @@ export const sendCustomEmail = async ({
   pdfFileName = null
 }) => {
   try {
-    console.log("[Email] Sending custom email to:", to);
     const payload = {
       to,
       name,
@@ -217,7 +212,6 @@ export const sendCustomEmail = async ({
       return { success: false, error: data.error || "Failed to send email" };
     }
 
-    console.log("[Email] Custom email sent successfully:", data);
     return { success: true, data };
   } catch (error) {
     console.error("[Email] Email service error:", error);

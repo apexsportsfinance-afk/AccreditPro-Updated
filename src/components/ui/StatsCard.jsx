@@ -9,37 +9,66 @@ export function StatsCard({
   iconColor = "text-primary-400",
   change,
   changeType = "neutral",
+  chart = [40, 60, 45, 70, 50, 80, 65], // Default sparkline data
   className
 }) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
       className={cn(
-        "bg-gradient-to-br from-swim-deep/60 via-primary-950/50 to-ocean-950/40 border border-primary-500/20 rounded-xl p-5 shadow-lg shadow-primary-900/20",
+        "glass-panel rounded-2xl p-6 relative group overflow-hidden",
         className
       )}
     >
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between relative z-10">
         <div>
-          <p className="text-lg text-slate-400 font-extralight mb-1">{title}</p>
-          <p className="text-3xl font-bold text-white">{value}</p>
+          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-1 group-hover:text-primary-400 transition-colors">{title}</p>
+          <p className="text-3xl font-black text-white tracking-tighter">{value}</p>
           {change && (
-            <p className={cn(
-              "text-lg mt-1 font-extralight",
-              changeType === "positive" && "text-emerald-400",
-              changeType === "negative" && "text-red-400",
-              changeType === "neutral" && "text-slate-500"
-            )}>
-              {change}
-            </p>
+            <div className="flex items-center gap-1.5 mt-2">
+              <span className={cn(
+                "text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border",
+                changeType === "positive" && "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+                changeType === "negative" && "bg-red-500/10 text-red-400 border-red-500/20",
+                changeType === "neutral" && "bg-slate-500/10 text-slate-500 border-slate-500/20"
+              )}>
+                {change}
+              </span>
+            </div>
           )}
         </div>
         {Icon && (
-          <div className="p-3 rounded-xl bg-primary-500/10 border border-primary-500/20">
-            <Icon className={cn("w-6 h-6", iconColor)} />
+          <div className="p-3 rounded-2xl bg-white/5 border border-white/10 group-hover:bg-primary-500/10 group-hover:border-primary-500/20 transition-all">
+            <Icon className={cn("w-5 h-5", iconColor)} />
           </div>
         )}
+      </div>
+
+      {/* CSS Micro-chart (Sparkline) */}
+      <div className="absolute bottom-0 left-0 right-0 h-12 opacity-30 group-hover:opacity-60 transition-opacity">
+        <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 100 100">
+          <defs>
+            <linearGradient id={`grad-${title.replace(/\s+/g, '-')}`} x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="currentColor" stopOpacity="0.4" className={iconColor} />
+              <stop offset="100%" stopColor="currentColor" stopOpacity="0" className={iconColor} />
+            </linearGradient>
+          </defs>
+          <path
+            d={`M 0 100 ${chart.map((v, i) => `L ${(i / (chart.length - 1)) * 100} ${100 - v}`).join(' ')} L 100 100 Z`}
+            fill={`url(#grad-${title.replace(/\s+/g, '-')})`}
+            className={iconColor}
+          />
+          <path
+            d={chart.map((v, i) => `${i === 0 ? 'M' : 'L'} ${(i / (chart.length - 1)) * 100} ${100 - v}`).join(' ')}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={iconColor}
+          />
+        </svg>
       </div>
     </motion.div>
   );

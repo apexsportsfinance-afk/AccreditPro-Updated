@@ -93,7 +93,8 @@ export default function EditAccreditationModal({
   eventCategories = [],
   onSave,
   saving = false,
-  currentEvent = null
+  currentEvent = null,
+  clubs = []
 }) {
   const [formData, setFormData] = useState({
     firstName: "",
@@ -454,13 +455,28 @@ export default function EditAccreditationModal({
         {/* Affiliation Section */}
         <div className="space-y-4">
           <h3 className="text-lg font-semibold text-white border-b border-slate-700 pb-2">Affiliation</h3>
-          <Input
-            label="Organization / Club / Academy"
-            name="club"
-            value={formData.club}
-            onChange={handleInputChange}
-            placeholder="Enter club or organization name"
-          />
+          {clubs && clubs.length > 0 ? (
+            <div className="relative z-[110]">
+              <SearchableSelect
+                label="Organization / Club / Academy"
+                value={formData.club}
+                onChange={(e) => setFormData(prev => ({ ...prev, club: e.target.value }))}
+                options={clubs.map(c => {
+                  const name = typeof c === 'string' ? c : (c?.full || c?.short);
+                  return name ? { value: name, label: name } : null;
+                }).filter(Boolean)}
+                placeholder="Search and select club..."
+              />
+            </div>
+          ) : (
+            <Input
+              label="Organization / Club / Academy"
+              name="club"
+              value={formData.club}
+              onChange={handleInputChange}
+              placeholder="Enter club or organization name"
+            />
+          )}
           <div className="relative z-[100]">
             <SearchableSelect
               label="Nationality"

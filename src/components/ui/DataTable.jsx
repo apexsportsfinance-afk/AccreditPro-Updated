@@ -19,27 +19,38 @@ const TableRow = memo(function TableRow({ row, columns, selectable, selectedRows
   return (
     <tr
       className={cn(
-        "bg-slate-900/50 hover:bg-slate-800/70 transition-colors duration-100",
+        "group transition-all duration-200",
         onRowClick && "cursor-pointer",
-        isSelected && "bg-cyan-900/20 border-l-2 border-l-cyan-500"
+        isSelected ? "bg-primary-500/10" : "hover:bg-white/[0.02]"
       )}
       onClick={handleRowClick}
     >
       {selectable && (
-        <td className="w-10 px-4 py-3" onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            checked={isSelected}
-            onChange={handleCheckboxChange}
-            className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-700 text-cyan-500 focus:ring-cyan-500/40"
-          />
+        <td className="w-12 px-6 py-4" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center">
+            <input
+              type="checkbox"
+              checked={isSelected}
+              onChange={handleCheckboxChange}
+              className="w-4 h-4 rounded-md border-white/10 bg-white/5 text-primary-500 focus:ring-primary-500/40 cursor-pointer transition-all"
+            />
+          </div>
         </td>
       )}
-      {columns.map((column) => (
-        <td key={column.key} className="px-4 py-3 text-lg text-slate-200">
-          {column.render ? column.render(row) : row[column.key]}
-        </td>
-      ))}
+      {columns.map((column) => {
+        let content;
+        try {
+          content = column.render ? column.render(row) : row[column.key];
+        } catch (err) {
+          console.error(`Render error in column ${column.key}:`, err);
+          content = <span className="text-red-400/50 italic text-[10px]">Data Error</span>;
+        }
+        return (
+          <td key={column.key} className="px-6 py-5 text-sm text-slate-300 font-medium whitespace-nowrap border-b border-white/[0.02]">
+            {content}
+          </td>
+        );
+      })}
     </tr>
   );
 });
@@ -53,7 +64,7 @@ export default function DataTable({
   selectedRows = [],
   onSelectRows,
   onRowClick,
-  emptyMessage = "No data available",
+  emptyMessage = "No records found in database",
   className,
   pageSize: initialPageSize = 50
 }) {
@@ -85,7 +96,7 @@ export default function DataTable({
   const searchLower = useMemo(() => debouncedQuery.toLowerCase(), [debouncedQuery]);
 
   const filteredData = useMemo(() => {
-    let result = data;
+    let result = Array.isArray(data) ? data : [];
 
     if (searchLower && searchFields.length > 0) {
       result = result.filter((item) =>
@@ -126,7 +137,7 @@ export default function DataTable({
   const handleSelectAll = useCallback(() => {
     if (!onSelectRows) return;
     const pageIds = paginatedData.map((item) => item.id);
-    const allPageSelected = pageIds.every((id) => selectedRowsSet.has(id));
+    const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedRowsSet.has(id));
     if (allPageSelected) {
       onSelectRows(selectedRows.filter((id) => !pageIds.includes(id)));
     } else {
@@ -170,147 +181,154 @@ export default function DataTable({
   }, [safePage, totalPages]);
 
   return (
-    <div className={cn("space-y-3", className)}>
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+    <div className={cn("space-y-6", className)}>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
         {searchable && (
-          <div className="relative w-full sm:max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <div className="relative w-full sm:max-w-md group">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-primary-400 transition-colors" />
             <input
               type="text"
-              placeholder="Search..."
+              placeholder="Instant search in records..."
               value={searchQuery}
               onChange={handleSearchChange}
-              className="w-full pl-9 pr-4 py-2 bg-slate-800/80 border border-slate-700/60 rounded-lg text-lg text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/60 focus:border-cyan-600 transition-all"
+              className="w-full pl-12 pr-4 h-12 bg-white/5 border border-white/10 rounded-2xl text-sm text-white placeholder-slate-600 focus:outline-none focus:bg-white/10 focus:border-primary-500/50 transition-all"
             />
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <span className="text-lg text-slate-500">Rows:</span>
+        <div className="flex items-center gap-4">
+          <span className="text-xs font-black uppercase tracking-widest text-slate-500">Density</span>
           <select
             value={rowsPerPage}
             onChange={(e) => {
               setRowsPerPage(Number(e.target.value));
               setCurrentPage(1);
             }}
-            className="bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-lg text-white focus:outline-none focus:ring-1 focus:ring-cyan-500/60"
+            className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-xs font-black text-white focus:outline-none hover:bg-white/10 transition-all cursor-pointer"
           >
             {ROWS_PER_PAGE_OPTIONS.map((opt) => (
-              <option key={opt} value={opt}>{opt}</option>
+              <option key={opt} value={opt} className="bg-slate-900">{opt} / page</option>
             ))}
           </select>
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-700/50 shadow-2xl shadow-black/40">
-        <table className="w-full text-lg">
-          <thead>
-            <tr className="bg-slate-800/95 border-b border-slate-700/60">
-              {selectable && (
-                <th className="w-10 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={allPageSelected}
-                    onChange={handleSelectAll}
-                    className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-700 text-cyan-500 focus:ring-cyan-500/40"
-                  />
-                </th>
-              )}
-              {columns.map((column) => (
-                <th
-                  key={column.key}
-                  className={cn(
-                    "px-4 py-3 text-left text-lg font-bold text-cyan-400 tracking-widest uppercase",
-                    column.sortable && "cursor-pointer select-none hover:text-cyan-200 transition-colors"
-                  )}
-                  onClick={() => column.sortable && handleSort(column.key)}
-                >
-                  <div className="flex items-center gap-1.5">
-                    {column.header}
-                    {column.sortable && sortConfig.key === column.key && (
-                      sortConfig.direction === "asc" ?
-                        <ChevronUp className="w-3 h-3 text-cyan-400" /> :
-                        <ChevronDown className="w-3 h-3 text-cyan-400" />
+      <div className="glass-panel rounded-3xl overflow-hidden shadow-[0_32px_64px_-16px_rgba(0,0,0,0.5)]">
+        <div className="overflow-x-auto">
+          <table className="w-full border-separate border-spacing-0">
+            <thead>
+              <tr className="bg-white/[0.03]">
+                {selectable && (
+                  <th className="w-12 px-6 py-5 border-b border-white/5">
+                    <div className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={allPageSelected}
+                        onChange={handleSelectAll}
+                        className="w-4 h-4 rounded-md border-white/10 bg-white/5 text-primary-500 focus:ring-primary-500/40 cursor-pointer transition-all"
+                      />
+                    </div>
+                  </th>
+                )}
+                {columns.map((column) => (
+                  <th
+                    key={column.key}
+                    className={cn(
+                      "px-6 py-5 text-left text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 border-b border-white/5",
+                      column.sortable && "cursor-pointer select-none hover:text-white transition-colors"
                     )}
-                  </div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-700/40">
-            {paginatedData.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={columns.length + (selectable ? 1 : 0)}
-                  className="px-4 py-10 text-center text-slate-500 text-lg"
-                >
-                  {emptyMessage}
-                </td>
+                    onClick={() => column.sortable && handleSort(column.key)}
+                  >
+                    <div className="flex items-center gap-2">
+                      {column.header}
+                      {column.sortable && sortConfig.key === column.key && (
+                        <div className="flex flex-col text-primary-500">
+                          {sortConfig.direction === "asc" ?
+                            <ChevronUp className="w-3 h-3" /> :
+                            <ChevronDown className="w-3 h-3" />
+                          }
+                        </div>
+                      )}
+                    </div>
+                  </th>
+                ))}
               </tr>
-            ) : (
-              paginatedData.map((row) => (
-                <TableRow
-                  key={row.id}
-                  row={row}
-                  columns={columns}
-                  selectable={selectable}
-                  selectedRows={selectedRowsSetForChild}
-                  onSelectRow={handleSelectRow}
-                  onRowClick={onRowClick}
-                />
-              ))
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-white/[0.02]">
+              {paginatedData.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={columns.length + (selectable ? 1 : 0)}
+                    className="px-6 py-24 text-center"
+                  >
+                    <div className="flex flex-col items-center gap-4 opacity-20">
+                      <Search className="w-12 h-12" />
+                      <p className="text-xl font-light italic">{emptyMessage}</p>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                paginatedData.map((row) => (
+                  <TableRow
+                    key={row.id}
+                    row={row}
+                    columns={columns}
+                    selectable={selectable}
+                    selectedRows={selectedRowsSetForChild}
+                    onSelectRow={handleSelectRow}
+                    onRowClick={onRowClick}
+                  />
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-lg text-slate-400 px-1">
-        <div className="flex items-center gap-3">
-          <span>
-            {filteredData.length === 0
-              ? "No entries"
-              : `${(safePage - 1) * rowsPerPage + 1}-${Math.min(safePage * rowsPerPage, filteredData.length)} of ${filteredData.length}`}
-            {data.length !== filteredData.length && ` (filtered from ${data.length})`}
-          </span>
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-6 px-4">
+        <div className="flex items-center gap-6">
+          <div className="flex flex-col">
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Pagination Control</span>
+            <div className="flex items-center gap-3 text-xs text-slate-400 font-bold uppercase italic">
+              <span>{filteredData.length === 0 ? "Entry null" : `Showing ${((safePage - 1) * rowsPerPage) + 1} - ${Math.min(safePage * rowsPerPage, filteredData.length)} of ${filteredData.length}`}</span>
+              {data.length !== filteredData.length && <span className="text-primary-500/50">• Query match found</span>}
+            </div>
+          </div>
           {selectable && selectedRows.length > 0 && (
-            <span className="text-cyan-400 font-medium">{selectedRows.length} selected</span>
-          )}
-          {selectable && filteredData.length > 0 && selectedRows.length < filteredData.length && (
-            <button
-              onClick={handleSelectAllFiltered}
-              className="text-lg text-cyan-400 hover:text-cyan-300 underline"
-            >
-              Select all {filteredData.length}
-            </button>
+            <div className="px-3 py-1 bg-primary-500/10 border border-primary-500/20 rounded-full">
+              <span className="text-[10px] font-black text-primary-400 uppercase tracking-widest">{selectedRows.length} Marked</span>
+            </div>
           )}
         </div>
 
         {totalPages > 1 && (
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2">
             <button
               onClick={() => goToPage(safePage - 1)}
               disabled={safePage <= 1}
-              className="p-1.5 rounded-md hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              className="w-10 h-10 flex items-center justify-center rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-20 disabled:cursor-not-allowed transition-all"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            {getPageNumbers().map((page) => (
-              <button
-                key={page}
-                onClick={() => goToPage(page)}
-                className={cn(
-                  "w-8 h-8 rounded-md text-lg font-medium transition-colors",
-                  page === safePage
-                    ? "bg-cyan-600 text-white"
-                    : "hover:bg-slate-700 text-slate-400"
-                )}
-              >
-                {page}
-              </button>
-            ))}
+            <div className="flex items-center gap-2 bg-white/5 border border-white/5 p-1 rounded-2xl">
+              {getPageNumbers().map((page) => (
+                <button
+                  key={page}
+                  onClick={() => goToPage(page)}
+                  className={cn(
+                    "w-9 h-9 rounded-xl text-xs font-black transition-all",
+                    page === safePage
+                      ? "bg-primary-500 text-white shadow-lg shadow-primary-500/20"
+                      : "text-slate-500 hover:text-white hover:bg-white/5"
+                  )}
+                >
+                  {page}
+                </button>
+              ))}
+            </div>
             <button
               onClick={() => goToPage(safePage + 1)}
               disabled={safePage >= totalPages}
-              className="p-1.5 rounded-md hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              className="w-10 h-10 flex items-center justify-center rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-20 disabled:cursor-not-allowed transition-all"
             >
               <ChevronRight className="w-4 h-4" />
             </button>

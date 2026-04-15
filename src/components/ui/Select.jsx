@@ -9,8 +9,11 @@ export function Select({
   className,
   light = false,
   required = false,
+  value,
   ...props
 }) {
+  const safeValue = value || "";
+  
   return (
     <div className="space-y-1.5">
       {label && (
@@ -23,6 +26,7 @@ export function Select({
         </label>
       )}
       <select
+        value={safeValue}
         className={cn(
           "w-full px-4 py-2.5 rounded-lg border text-lg transition-all duration-200 focus:outline-none focus:ring-2 appearance-none",
           light

@@ -14,7 +14,9 @@ import {
   Droplets,
   Timer,
   AlertTriangle,
-  Loader2
+  Loader2,
+  Search,
+  X
 } from "lucide-react";
 import { Calendar, Clock, MapPin } from "lucide-react";
 import Button from "../../components/ui/Button";
@@ -25,7 +27,7 @@ import Modal from "../../components/ui/Modal";
 import SwimmingBackground from "../../components/ui/SwimmingBackground";
 import { EventsAPI, AccreditationsAPI, EventCategoriesAPI, CategoriesAPI } from "../../lib/storage";
 import { COUNTRIES, ROLES, validateFile, fileToBase64 } from "../../lib/utils";
-import { SportEventsAPI } from "../../lib/broadcastApi";
+import { SportEventsAPI, GlobalSettingsAPI } from "../../lib/broadcastApi";
 import { uploadToStorage } from "../../lib/uploadToStorage";
 
 const DEFAULT_DOCUMENTS = [
@@ -68,9 +70,11 @@ export default function Register() {
     documents: {}
   });
   const [selectedSportEvents, setSelectedSportEvents] = useState([]);
+  const [teamRoles, setTeamRoles] = useState(["athlete", "coach", "head coach", "team admin", "team doctor", "team manager", "team official", "team physiotherapist"]);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [termsModalOpen, setTermsModalOpen] = useState(false);
   const [duplicateError, setDuplicateError] = useState(null);
+  const [clubs, setClubs] = useState([]);
 
   useEffect(() => {
     const loadEvent = async () => {
@@ -85,6 +89,20 @@ export default function Register() {
             const allCats = await CategoriesAPI.getActive();
             setEventCategories(allCats);
           }
+          
+          // Identify Team roles based on parentId or names
+          try {
+            const allCategories = await CategoriesAPI.getAll();
+            const teamParent = allCategories.find(c => c.name.toLowerCase() === "team");
+            if (teamParent) {
+              const children = allCategories.filter(c => c.parentId === teamParent.id);
+              if (children.length > 0) {
+                setTeamRoles(children.map(c => c.name.toLowerCase()));
+              }
+            }
+          } catch (err) {
+            console.warn("Failed to dynamically identify team roles, using defaults", err);
+          }
         } catch (err) {
           console.error("Failed to load categories:", err);
           setEventCategories([]);
@@ -92,7 +110,15 @@ export default function Register() {
         try {
           const evs = await SportEventsAPI.getByEventId(eventData.id);
           setSportEvents(evs);
-        } catch { /* silent — sport events optional */ }
+        } catch { /* silent */ }
+      // Fetch standard club list for dropdown
+      try {
+        const clubData = await GlobalSettingsAPI.getClubs(eventData.id);
+        setClubs(clubData);
+      } catch (err) {
+        console.error("Failed to load clubs:", err);
+        setClubs([]);
+      }
       }
       setLoading(false);
     };
@@ -205,14 +231,16 @@ export default function Register() {
     setSubmitting(true);
     setDuplicateError(null);
     try {
-      const duplicateCheck = await AccreditationsAPI.checkDuplicateName(
+      const duplicateCheck = await AccreditationsAPI.checkDuplicate(
         event.id,
         formData.firstName,
-        formData.lastName
+        formData.lastName,
+        formData.club,
+        formData.dateOfBirth
       );
       if (duplicateCheck.isDuplicate) {
         setDuplicateError({
-          message: `An athlete named "${formData.firstName} ${formData.lastName}" has already registered for this event.`,
+          message: `A registration with the name "${formData.firstName} ${formData.lastName}", organization "${formData.club}", and same date of birth already exists for this event.`,
           status: duplicateCheck.existingRecord?.status || "pending"
         });
         setSubmitting(false);
@@ -264,13 +292,23 @@ export default function Register() {
   if (loading) {
     return (
       <SwimmingBackground>
-        <div className="min-h-screen flex items-center justify-center">
-          <div className="text-center">
+        <div className="min-h-screen flex items-center justify-center p-6">
+          <div className="relative z-10 flex flex-col items-center gap-6">
             <div className="relative">
-              <div className="animate-spin w-12 h-12 border-4 border-cyan-500 border-t-transparent rounded-full shadow-lg shadow-cyan-500/20" />
-              <Droplets className="absolute -top-2 -right-2 w-6 h-6 text-cyan-400 animate-bounce" />
+              <div className="w-16 h-16 rounded-3xl bg-cyan-500/10 border border-cyan-500/20 animate-pulse flex items-center justify-center">
+                <div className="animate-spin w-8 h-8 border-4 border-cyan-500 border-t-transparent rounded-full shadow-lg shadow-cyan-500/20" />
+              </div>
+              <Droplets className="absolute -top-3 -right-3 w-8 h-8 text-cyan-400 animate-bounce" />
+              <div className="absolute -inset-4 bg-cyan-500/10 blur-3xl -z-10 animate-pulse" />
             </div>
-            <p className="text-lg text-cyan-600 mt-4">Loading event...</p>
+            <div className="flex flex-col items-center gap-2">
+              <p className="text-sm font-black text-white uppercase tracking-[0.4em] animate-pulse">
+                Preparing <span className="text-cyan-400">Registration</span>
+              </p>
+              <div className="w-32 h-1 bg-white/5 rounded-full overflow-hidden">
+                <div className="w-full h-full bg-cyan-500 animate-shimmer" style={{ backgroundSize: '200% 100%' }} />
+              </div>
+            </div>
           </div>
         </div>
       </SwimmingBackground>
@@ -305,19 +343,68 @@ export default function Register() {
   if (!event.registrationOpen) {
     return (
       <SwimmingBackground>
-        <div id="register_closed" className="min-h-screen flex items-center justify-center p-4">
+        <div id="register_closed" className="min-h-screen flex items-center justify-center p-4 md:p-6 overflow-hidden">
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="text-center max-w-md"
+            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="relative z-10 w-full max-w-xl"
           >
-            <AlertCircle className="w-16 h-16 text-amber-500 mx-auto mb-4" />
-            <h1 className="text-2xl font-bold text-slate-800 mb-2">Registration Closed</h1>
-            <p className="text-lg text-slate-500 mb-4">
-              Registration for {event.name} is currently closed.
-            </p>
-            <p className="text-lg text-slate-400">
-              Please contact the event organizers for more information.
+            {/* Main Card */}
+            <div className="bg-white/95 backdrop-blur-2xl border border-white rounded-[2rem] shadow-[0_24px_80px_-16px_rgba(0,0,0,0.25)] overflow-hidden">
+              <div className="p-6 md:p-10 text-center">
+                {/* Badge Icon (Reduced size) */}
+                <div className="mb-6 relative inline-block">
+                  <div className="absolute inset-0 bg-amber-500/20 blur-3xl rounded-full" />
+                  <div className="relative w-24 h-24 rounded-3xl bg-amber-500 flex items-center justify-center shadow-lg shadow-amber-500/30 rotate-12">
+                    <AlertCircle className="w-12 h-12 text-white -rotate-12" />
+                  </div>
+                </div>
+
+                {/* Status Header */}
+                <div className="inline-flex items-center gap-3 px-4 py-2 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-700 text-[10px] font-black uppercase tracking-[0.25em] mb-6">
+                  <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                  Registration: Closed
+                </div>
+
+                <h1 className="text-3xl md:text-4xl font-black text-slate-900 mb-3 tracking-tighter uppercase leading-none font-serif">
+                  Registration is closed
+                </h1>
+                
+                <h2 className="text-lg md:text-xl font-bold text-primary-600 mb-6 tracking-tight uppercase opacity-90">
+                  {event.name}
+                </h2>
+
+                <div className="relative max-h-[40vh] overflow-y-auto scrollbar-hide">
+                  {event.registrationClosedMessage ? (
+                    <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 md:p-7 text-left">
+                      <div className="text-slate-700 font-medium leading-relaxed whitespace-pre-wrap text-sm md:text-base">
+                        {event.registrationClosedMessage}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-base text-slate-500 font-medium italic">
+                      Please contact event organizers for assistance.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Card Footer */}
+              <div className="bg-slate-50/50 px-8 py-4 border-t border-slate-100 flex items-center justify-between">
+                <span className="text-[9px] items-center gap-1 font-black uppercase tracking-[0.3em] text-slate-400 flex">
+                  <Shield className="w-3 h-3" />
+                  Apex Sports
+                </span>
+                <div className="flex gap-1">
+                  <div className="w-1 h-1 rounded-full bg-slate-200" />
+                  <div className="w-1 h-1 rounded-full bg-slate-200" />
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom attribution */}
+            <p className="mt-6 text-center text-white/30 text-[9px] font-black uppercase tracking-[0.4em]">
+              Official Accreditation Portal
             </p>
           </motion.div>
         </div>
@@ -480,6 +567,7 @@ export default function Register() {
                   error={errors.gender}
                   required
                   light
+                  placeholder="Select gender"
                   options={[
                     { value: "Male", label: "Male" },
                     { value: "Female", label: "Female" }
@@ -505,31 +593,52 @@ export default function Register() {
               </h2>
 
               {/* REORDERED: Category/Role first */}
-              <Select
-                label="Category/Role"
-                name="role"
-                value={formData.role}
-                onChange={handleInputChange}
-                error={errors.role}
-                required
-                light
-                options={getRoleOptions()}
-              />
+              <div className="relative z-[30]">
+                <Select
+                  label="Category/Role"
+                  name="role"
+                  value={formData.role}
+                  onChange={handleInputChange}
+                  error={errors.role}
+                  required
+                  light
+                  placeholder="Select category/role"
+                  options={getRoleOptions()}
+                />
+              </div>
 
               {/* Organization/Club/Academy second */}
-              <Input
-                label="Organization/Club/Academy"
-                name="club"
-                value={formData.club}
-                onChange={handleInputChange}
-                error={errors.club}
-                required
-                placeholder="Enter organization, club or academy"
-                light
-              />
+              <div className="relative z-[20]">
+                {formData.role && (teamRoles.includes(formData.role.toLowerCase()) || formData.role.toLowerCase().includes("athlete") || formData.role.toLowerCase().includes("coach")) && clubs.length > 0 ? (
+                  <SearchableSelect
+                    label="Organization/Club/Academy"
+                    value={formData.club}
+                    onChange={(e) => handleInputChange({ target: { name: "club", value: e.target.value } })}
+                    error={errors.club}
+                    required
+                    options={clubs.map(c => {
+                      const name = typeof c === 'string' ? c : (c?.full || c?.short);
+                      return name ? { value: name, label: name } : null;
+                    }).filter(Boolean)}
+                    placeholder="Select organization, club or academy"
+                    light
+                  />
+                ) : (
+                  <Input
+                    label="Organization/Club/Academy"
+                    name="club"
+                    value={formData.club}
+                    onChange={handleInputChange}
+                    error={errors.club}
+                    required
+                    placeholder="Enter organization, club or academy"
+                    light
+                  />
+                )}
+              </div>
 
               {/* Nationality last - full width for emphasis */}
-              <div className="relative z-[9999]">
+              <div className="relative z-[10]">
                 <SearchableSelect
                   label="Nationality"
                   value={formData.nationality}
@@ -539,65 +648,18 @@ export default function Register() {
                   options={COUNTRIES.map((c) => ({ value: c.code, label: c.name }))}
                   placeholder="Select your nationality"
                   light
-                  className="relative z-[9999]"
+                  className="relative"
                 />
               </div>
             </div>
 
             {/* Event Details section — shown only when Athlete role is selected and sport events exist */}
             {formData.role && formData.role.toLowerCase().includes("athlete") && sportEvents.length > 0 && (
-              <div className="space-y-4 relative z-[1]">
-                <h2 className="text-2xl font-bold text-cyan-700 flex items-center gap-2">
-                  <Calendar className="w-6 h-6 text-cyan-600" />
-                  Event Schedule
-                </h2>
-                <p className="text-lg text-slate-600 font-extralight">
-                  Select the events you want to participate in:
-                </p>
-                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                  {sportEvents.map((ev, i) => (
-                    <div
-                      key={ev.id || i}
-                      onClick={() => {
-                        const isSelected = selectedSportEvents.some(s => s.eventCode === ev.eventCode);
-                        setSelectedSportEvents(prev => 
-                          isSelected 
-                            ? prev.filter(s => s.eventCode !== ev.eventCode)
-                            : [...prev, ev]
-                        );
-                      }}
-                      className={`w-full text-left flex items-center gap-3 px-4 py-3 rounded-lg border-2 cursor-pointer transition-colors ${
-                        selectedSportEvents.some(s => s.eventCode === ev.eventCode)
-                          ? "border-cyan-500 bg-cyan-100"
-                          : "border-cyan-200 bg-cyan-50 hover:border-cyan-400 hover:bg-cyan-100/60"
-                      }`}
-                    >
-                      <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
-                        selectedSportEvents.some(s => s.eventCode === ev.eventCode)
-                          ? "border-cyan-500 bg-cyan-500"
-                          : "border-cyan-300 bg-white"
-                      }`}>
-                        {selectedSportEvents.some(s => s.eventCode === ev.eventCode) && (
-                          <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
-                            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="2"/>
-                          </svg>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <span className="text-slate-800 font-extralight text-lg">{ev.eventName}</span>
-                        {ev.gender && (
-                          <span className="text-slate-500 font-extralight text-lg ml-2">({ev.gender})</span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                {selectedSportEvents.length > 0 && (
-                  <p className="text-lg text-cyan-700 font-extralight">
-                    {selectedSportEvents.length} event{selectedSportEvents.length !== 1 ? "s" : ""} selected
-                  </p>
-                )}
-              </div>
+              <EventScheduleDropdown
+                sportEvents={sportEvents}
+                selectedSportEvents={selectedSportEvents}
+                setSelectedSportEvents={setSelectedSportEvents}
+              />
             )}
 
             <div className="space-y-4 relative z-[1]">
@@ -631,12 +693,14 @@ export default function Register() {
                     <label className="block text-lg font-medium text-slate-700 mb-1.5">
                       {doc.label} (JPEG, PNG{doc.accept.includes("pdf") ? ", PDF" : ""} - Max 5MB)
                     </label>
-                    <input
-                      type="file"
-                      accept={doc.accept}
-                      onChange={(e) => handleDocumentFileChange(e, doc.id)}
-                      className="w-full text-lg text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-lg file:font-medium file:bg-gradient-to-r file:from-cyan-500 file:to-blue-600 file:text-white hover:file:from-cyan-600 hover:file:to-blue-700"
-                    />
+                    <div className="relative">
+                      <input
+                        type="file"
+                        accept={doc.accept}
+                        onChange={(e) => handleDocumentFileChange(e, doc.id)}
+                        className="w-full text-lg text-slate-600 file:mr-4 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-lg file:font-medium file:bg-gradient-to-r file:from-cyan-500 file:to-blue-600 file:text-white hover:file:from-cyan-600 hover:file:to-blue-700 file:cursor-pointer cursor-pointer py-2"
+                      />
+                    </div>
                     {uploadingDocs[doc.id] && (
                       <p className="text-lg text-amber-500 mt-1 flex items-center gap-1">
                         <Loader2 className="w-4 h-4 animate-spin" /> Uploading...
@@ -666,7 +730,7 @@ export default function Register() {
                     setErrors((prev) => ({ ...prev, terms: null }));
                   }
                 }}
-                className="mt-1.5 w-5 h-5 rounded border-cyan-300 bg-white text-cyan-500 focus:ring-cyan-400/50 cursor-pointer"
+                className="mt-1.5 w-6 h-6 rounded border-cyan-300 bg-white text-cyan-500 focus:ring-cyan-400/50 cursor-pointer"
               />
               <div>
                 <label htmlFor="terms" className="text-lg text-slate-700 cursor-pointer block">
@@ -693,7 +757,7 @@ export default function Register() {
 
             <Button
               type="submit"
-              className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 shadow-lg shadow-cyan-500/25 relative z-[1]"
+              className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 shadow-lg shadow-cyan-500/25 relative z-[1] min-h-[52px]"
               size="lg"
               loading={submitting}
             >
@@ -728,5 +792,175 @@ export default function Register() {
         </Modal>
       </div>
     </SwimmingBackground>
+  );
+}
+
+/* ─── Event Schedule Searchable Dropdown ───────────────────── */
+function EventScheduleDropdown({ sportEvents, selectedSportEvents, setSelectedSportEvents }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const filtered = sportEvents.filter(ev =>
+    ev.eventName.toLowerCase().includes(search.toLowerCase()) ||
+    (ev.eventCode && ev.eventCode.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  const toggleEvent = (ev) => {
+    const isSelected = selectedSportEvents.some(s => s.eventCode === ev.eventCode);
+    setSelectedSportEvents(prev =>
+      isSelected
+        ? prev.filter(s => s.eventCode !== ev.eventCode)
+        : [...prev, ev]
+    );
+  };
+
+  return (
+    <div className="space-y-3 relative z-[1]">
+      <h2 className="text-2xl font-bold text-cyan-700 flex items-center gap-2">
+        <Calendar className="w-6 h-6 text-cyan-600" />
+        Event Schedule
+      </h2>
+      <p className="text-lg text-slate-600 font-extralight">
+        Select the events you want to participate in:
+      </p>
+
+      {/* Toggle Button */}
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full px-4 py-3 rounded-xl border-2 border-cyan-300 bg-white text-left flex items-center justify-between transition-all hover:border-cyan-400 focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500"
+      >
+        <span className="text-slate-700 font-medium text-lg">
+          {selectedSportEvents.length > 0
+            ? `${selectedSportEvents.length} event${selectedSportEvents.length !== 1 ? "s" : ""} selected`
+            : "Tap to select events"
+          }
+        </span>
+        <div className="flex items-center gap-2">
+          {selectedSportEvents.length > 0 && (
+            <span className="bg-cyan-500 text-white text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full">
+              {selectedSportEvents.length}
+            </span>
+          )}
+          <svg className={`w-5 h-5 text-slate-400 transition-transform ${isOpen ? "rotate-180" : ""}`} viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+          </svg>
+        </div>
+      </button>
+
+      {/* Dropdown Panel */}
+      {isOpen && (
+        <div className="border-2 border-cyan-300 rounded-xl bg-white overflow-hidden shadow-lg shadow-cyan-100/50">
+          {/* Search Input */}
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-cyan-100 bg-cyan-50/50">
+            <Search className="w-4 h-4 text-cyan-500 flex-shrink-0" />
+            <input
+              type="text"
+              placeholder="Search events..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="flex-1 bg-transparent text-lg text-slate-800 placeholder-slate-400 focus:outline-none"
+            />
+            {search && (
+              <button type="button" onClick={() => setSearch("")} className="p-1 text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Event List */}
+          <div className="relative">
+            <div className="max-h-52 overflow-y-auto overscroll-contain divide-y divide-cyan-50">
+              {filtered.length > 0 ? filtered.map((ev, i) => {
+                const isSelected = selectedSportEvents.some(s => s.eventCode === ev.eventCode);
+                return (
+                  <div
+                    key={ev.id || i}
+                    onClick={() => toggleEvent(ev)}
+                    className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors active:bg-cyan-100 ${
+                      isSelected
+                        ? "bg-cyan-50"
+                        : "hover:bg-slate-50"
+                    }`}
+                  >
+                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
+                      isSelected
+                        ? "border-cyan-500 bg-cyan-500"
+                        : "border-slate-300 bg-white"
+                    }`}>
+                      {isSelected && (
+                        <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+                          <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        {ev.eventCode && (
+                          <span className="text-xs font-bold text-cyan-600 bg-cyan-100 px-1.5 py-0.5 rounded">{ev.eventCode}</span>
+                        )}
+                        <span className={`text-lg truncate ${isSelected ? "text-cyan-800 font-medium" : "text-slate-700 font-normal"}`}>
+                          {ev.eventName}
+                        </span>
+                      </div>
+                      {(ev.gender || ev.date) && (
+                        <p className="text-sm text-slate-400 mt-0.5">
+                          {[ev.gender, ev.date].filter(Boolean).join(" • ")}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              }) : (
+                <div className="px-4 py-6 text-center text-slate-400 text-lg">
+                  No events matching "{search}"
+                </div>
+              )}
+            </div>
+            {/* Scroll fade indicator */}
+            {filtered.length > 4 && (
+              <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-white to-transparent pointer-events-none" />
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-4 py-2.5 border-t border-cyan-100 bg-cyan-50/30 flex items-center justify-between">
+            <span className="text-sm text-slate-500">
+              {filtered.length} event{filtered.length !== 1 ? "s" : ""} available
+            </span>
+            {selectedSportEvents.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelectedSportEvents([])}
+                className="text-sm text-red-500 hover:text-red-600 font-medium"
+              >
+                Clear All
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Selected Events Chips */}
+      {selectedSportEvents.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {selectedSportEvents.map(ev => (
+            <span
+              key={ev.eventCode}
+              className="inline-flex items-center gap-1 bg-cyan-100 text-cyan-800 text-sm font-medium pl-3 pr-1.5 py-1.5 rounded-full border border-cyan-200"
+            >
+              {ev.eventCode ? `${ev.eventCode} – ` : ""}{ev.eventName}
+              <button
+                type="button"
+                onClick={() => toggleEvent(ev)}
+                className="p-0.5 rounded-full hover:bg-cyan-200 transition-colors ml-1"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

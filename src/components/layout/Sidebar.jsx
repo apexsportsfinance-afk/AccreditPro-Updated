@@ -12,9 +12,11 @@ import {
   ChevronLeft,
   ChevronRight,
   LogOut,
-  History
+  History,
+  Radio
 } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
+import { useLayout } from "../../contexts/LayoutContext";
 
 const navItems = [
   { to: "/admin/dashboard", icon: LayoutDashboard, label: "Dashboard" },
@@ -22,6 +24,7 @@ const navItems = [
   { to: "/admin/accreditations", icon: ClipboardList, label: "Accreditations" },
   { to: "/admin/zones", icon: Map, label: "Zones" },
   { to: "/admin/qr-system", icon: QrCode, label: "QR System" },
+  { to: "/admin/broadcasts", icon: Radio, label: "Broadcast History" },
   { to: "/admin/users", icon: Users, label: "Users" },
   { to: "/admin/audit", icon: History, label: "Audit Log" },
   { to: "/admin/settings", icon: Settings, label: "Settings" }
@@ -29,7 +32,7 @@ const navItems = [
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
-  const [collapsed, setCollapsed] = useState(false);
+  const { sidebarCollapsed: collapsed, toggleSidebar } = useLayout();
 
   return (
     <aside
@@ -49,7 +52,7 @@ export default function Sidebar() {
           </div>
         )}
         <button
-          onClick={() => setCollapsed(prev => !prev)}
+          onClick={toggleSidebar}
           className="ml-auto p-1.5 rounded-lg hover:bg-slate-800 text-slate-500 hover:text-white transition-colors flex-shrink-0"
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >

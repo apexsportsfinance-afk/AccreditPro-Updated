@@ -301,14 +301,7 @@ export default function Home() {
                 </span>
               </div>
               <p className="text-lg text-slate-400 font-medium">
-                AI vibe coded development by{" "}
-                <a href="https://biela.dev/" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300 transition-colors font-semibold">
-                  Biela.dev
-                </a>
-                , powered by{" "}
-                <a href="https://teachmecode.ae/" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300 transition-colors font-semibold">
-                  TeachMeCode Institute
-                </a>
+                Developed by <span className="text-cyan-400 font-semibold">Basit Ali Shah</span> Powered by <span className="text-cyan-400 font-semibold">Apexsports Academy LLC</span>
               </p>
             </div>
           </div>

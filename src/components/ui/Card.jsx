@@ -5,7 +5,7 @@ export function Card({ children, className, ...props }) {
   return (
     <div
       className={cn(
-        "bg-gradient-to-br from-swim-deep/60 via-primary-950/50 to-ocean-950/40 border border-primary-500/20 rounded-xl shadow-xl shadow-primary-900/20",
+        "glass-panel rounded-3xl overflow-hidden shadow-[0_8px_32px_-8px_rgba(0,0,0,0.3)] transition-all duration-300",
         className
       )}
       {...props}
@@ -19,7 +19,7 @@ export function CardHeader({ children, className, ...props }) {
   return (
     <div
       className={cn(
-        "px-6 py-4 border-b border-primary-500/20",
+        "px-8 py-6 border-b border-white/5 bg-white/[0.01]",
         className
       )}
       {...props}
@@ -31,7 +31,7 @@ export function CardHeader({ children, className, ...props }) {
 
 export function CardContent({ children, className, ...props }) {
   return (
-    <div className={cn("px-6 py-4", className)} {...props}>
+    <div className={cn("px-8 py-6", className)} {...props}>
       {children}
     </div>
   );

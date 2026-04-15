@@ -18,10 +18,11 @@ export function SearchableSelect({
   const containerRef = useRef(null);
   const inputRef = useRef(null);
 
-  const selectedOption = options.find((o) => o.value === value);
+  const safeOptions = Array.isArray(options) ? options : [];
+  const selectedOption = safeOptions.find((o) => o.value === (value || ""));
 
-  const filtered = options.filter((o) =>
-    o.label.toLowerCase().includes(search.toLowerCase())
+  const filtered = safeOptions.filter((o) =>
+    o.label.toLowerCase().includes((search || "").toLowerCase())
   );
 
   useEffect(() => {
@@ -32,7 +33,11 @@ export function SearchableSelect({
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("touchstart", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+    };
   }, []);
 
   const handleSelect = (option) => {
@@ -49,7 +54,7 @@ export function SearchableSelect({
 
   const handleOpen = () => {
     setIsOpen(true);
-    setTimeout(() => inputRef.current?.focus(), 50);
+    setTimeout(() => inputRef.current?.focus(), 100);
   };
 
   return (
@@ -91,7 +96,7 @@ export function SearchableSelect({
 
         {isOpen && (
           <div className={cn(
-            "absolute z-[9999] mt-1 w-full rounded-lg border shadow-2xl overflow-hidden",
+            "absolute z-[9999] mt-1 min-w-full w-max max-w-[90vw] md:max-w-md rounded-lg border shadow-2xl overflow-hidden",
             light
               ? "bg-white border-slate-200 shadow-black/10"
               : "bg-slate-900 border-slate-700 shadow-black/50"
@@ -113,7 +118,7 @@ export function SearchableSelect({
                 )}
               />
             </div>
-            <div className="max-h-56 overflow-y-auto">
+            <div className="max-h-64 overflow-y-auto overflow-x-hidden">
               {filtered.length === 0 ? (
                 <p className={cn(
                   "text-lg text-center py-4",
@@ -127,11 +132,12 @@ export function SearchableSelect({
                     key={option.value}
                     type="button"
                     onClick={() => handleSelect(option)}
+                    onTouchEnd={(e) => { e.preventDefault(); handleSelect(option); }}
                     className={cn(
-                      "w-full px-4 py-2.5 text-left text-lg transition-colors",
+                      "w-full px-4 py-3 text-left text-lg transition-colors whitespace-normal break-words leading-tight",
                       option.value === value
                         ? (light ? "bg-cyan-50 text-cyan-700 font-medium" : "bg-primary-500/20 text-primary-300 font-medium")
-                        : (light ? "text-slate-700 hover:bg-slate-50" : "text-slate-200 hover:bg-slate-800")
+                        : (light ? "text-slate-700 hover:bg-slate-50 active:bg-slate-100" : "text-slate-200 hover:bg-slate-800 active:bg-slate-700")
                     )}
                   >
                     {option.label}

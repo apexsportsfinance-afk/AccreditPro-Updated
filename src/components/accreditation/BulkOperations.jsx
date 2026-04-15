@@ -3,10 +3,12 @@ import { Download, FileSpreadsheet, FileText, Edit, CheckCircle, Mail, Image as 
 import Button from "../ui/Button";
 import Modal from "../ui/Modal";
 import Select from "../ui/Select";
+import SearchableSelect from "../ui/SearchableSelect";
 import { exportToExcel, exportTableToPDF } from "./ExportUtils";
 import { bulkDownloadPDFs } from "./cardExport";
 import ComposeEmailModal from "./ComposeEmailModal";
 import { bulkDownloadPhotos } from "../../lib/imageDownload";
+
 
 export default function BulkOperations({ 
   selectedRows, 
@@ -14,13 +16,11 @@ export default function BulkOperations({
   event, 
   zones, 
   onClearSelection,
-  onBulkEdit,
+  onOpenBulkEdit,
   onBulkApprove,
-  eventCategories = []
+  eventCategories = [],
+  clubs = []
 }) {
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [editField, setEditField] = useState("status");
-  const [editValue, setEditValue] = useState("");
   const [downloading, setDownloading] = useState(false);
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [downloadingPhotos, setDownloadingPhotos] = useState(false);
@@ -32,6 +32,9 @@ export default function BulkOperations({
     setDownloading(true);
     try {
       const selectedData = filteredData.filter(r => selectedRows.includes(r.id));
+      
+      // await prewarmCache(urlsToWarm);
+
       await bulkDownloadPDFs(selectedData, event, zones, "a6");
     } catch (err) {
       console.error("Bulk download error:", err);
@@ -46,7 +49,6 @@ export default function BulkOperations({
     try {
       const selectedData = filteredData.filter(r => selectedRows.includes(r.id));
       const count = await bulkDownloadPhotos(selectedData, event?.name || "event");
-      console.log(`Downloaded ${count} photos`);
     } catch (err) {
       console.error("Bulk photo download error:", err);
     } finally {
@@ -78,57 +80,10 @@ export default function BulkOperations({
     await exportTableToPDF(dataToExport, columns, "Accreditations List");
   };
 
-  const handleBulkEditSubmit = () => {
-    if (!editValue.trim()) return;
-    onBulkEdit(selectedRows, { [editField]: editValue });
-    setShowEditModal(false);
-    setEditValue("");
-    setEditField("status");
-  };
-
-  // Get options based on selected field
-  const getFieldOptions = () => {
-    switch (editField) {
-      case "status":
-        return [
-          { value: "pending", label: "Pending" },
-          { value: "approved", label: "Approved" },
-          { value: "rejected", label: "Rejected" }
-        ];
-      case "role":
-        if (eventCategories && eventCategories.length > 0) {
-          return eventCategories.map(cat => {
-            const categoryData = cat.category || cat;
-            const name = categoryData?.name || cat?.name;
-            return name ? { value: name, label: name } : null;
-          }).filter(Boolean);
-        }
-        return [
-          { value: "Athlete", label: "Athlete" },
-          { value: "Coach", label: "Coach" },
-          { value: "Official", label: "Official" },
-          { value: "Team Manager", label: "Team Manager" },
-          { value: "Medical", label: "Medical" },
-          { value: "Media", label: "Media" },
-          { value: "VIP", label: "VIP" },
-          { value: "Volunteer", label: "Volunteer" }
-        ];
-      case "zoneCode":
-        if (zones && zones.length > 0) {
-          return [
-            ...zones.map(z => ({ value: z.code, label: `${z.code} - ${z.name}` })),
-            { value: zones.map(z => z.code).join(","), label: "All Zones" }
-          ];
-        }
-        return [];
-      default:
-        return [];
-    }
-  };
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-3 mb-4 p-4 bg-slate-800/50 rounded-xl border border-slate-700/50">
+      <div className="flex flex-wrap items-center gap-3 mb-4 p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 relative z-30">
         <div className="flex items-center gap-2 mr-auto">
           <span className="text-slate-300 font-medium">{selectedRows.length} selected</span>
           {selectedRows.length > 0 && (
@@ -148,20 +103,30 @@ export default function BulkOperations({
         </div>
 
         {selectedRows.length > 0 && (
-          <>
+          <div className="flex items-center gap-3">
             <Button 
               variant="secondary" 
               size="sm" 
-              onClick={() => setShowEditModal(true)} 
+              onClick={(e) => {
+                e.stopPropagation();
+                console.log("BulkOperations: Opening Edit Modal for", selectedRows.length, "records");
+                onOpenBulkEdit();
+              }} 
               icon={Edit}
+              className="cursor-pointer pointer-events-auto"
             >
               Bulk Edit
             </Button>
             <Button 
               variant="secondary" 
               size="sm" 
-              onClick={onBulkApprove}
+              onClick={(e) => {
+                e.stopPropagation();
+                console.log("BulkOperations: Triggering bulk approve for", selectedRows.length, "records");
+                onBulkApprove();
+              }}
               icon={CheckCircle}
+              className="cursor-pointer pointer-events-auto"
             >
               Bulk Approve
             </Button>
@@ -191,7 +156,7 @@ export default function BulkOperations({
             >
               Download Photos
             </Button>
-          </>
+          </div>
         )}
         <Button variant="ghost" size="sm" onClick={handleExportExcel} icon={FileSpreadsheet}>
           Export Excel
@@ -200,61 +165,6 @@ export default function BulkOperations({
           Export PDF
         </Button>
       </div>
-
-      {/* Bulk Edit Modal */}
-      <Modal 
-        isOpen={showEditModal} 
-        onClose={() => setShowEditModal(false)} 
-        title="Bulk Edit Accreditations"
-      >
-        <div className="p-6 space-y-4">
-          <p className="text-lg text-slate-300">
-            Edit <span className="font-semibold text-white">{selectedRows.length}</span> selected accreditations
-          </p>
-          <div>
-            <label className="block text-lg font-medium text-slate-300 mb-2">Field to Edit</label>
-            <select 
-              value={editField} 
-              onChange={(e) => {
-                setEditField(e.target.value);
-                setEditValue("");
-              }}
-              className="w-full bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5 text-white text-lg focus:outline-none focus:ring-2 focus:ring-primary-500/50"
-            >
-              <option value="status">Status</option>
-              <option value="role">Role / Category</option>
-              <option value="zoneCode">Zone Access</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-lg font-medium text-slate-300 mb-2">New Value</label>
-            <Select
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              options={getFieldOptions()}
-              placeholder={`Select new ${editField === "zoneCode" ? "zone" : editField}...`}
-            />
-          </div>
-
-          <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4">
-            <p className="text-lg text-amber-400">
-              <strong>Warning:</strong> This will update the {editField} for all {selectedRows.length} selected records. 
-              This action affects both pending and approved accreditations.
-            </p>
-          </div>
-          <div className="flex justify-end gap-3 pt-4">
-            <Button variant="ghost" onClick={() => setShowEditModal(false)}>
-              Cancel
-            </Button>
-            <Button 
-              onClick={handleBulkEditSubmit}
-              disabled={!editValue.trim()}
-            >
-              Apply to {selectedRows.length} Records
-            </Button>
-          </div>
-        </div>
-      </Modal>
 
       {/* Bulk Email Compose Modal */}
       <ComposeEmailModal

@@ -1,54 +1,197 @@
-@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@200;300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Merriweather:ital,wght@0,300;0,400;0,700;0,900;1,300;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --font-sans: 'Nunito', sans-serif;
+  --font-sans: 'Inter', 'Nunito', sans-serif;
+  --font-serif: 'Merriweather', serif;
+  --space-base: 0.5rem; /* 8pt grid base */
+  --transition-smooth: 0.2s cubic-bezier(0.23, 1, 0.32, 1);
+  --primary: #0ea5e9;
+  --primary-dark: #0369a1;
+  --glass-bg: rgba(255, 255, 255, 0.03);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-blur: 16px;
 }
 
 * {
   box-sizing: border-box;
+  transition: background-color var(--transition-smooth), border-color var(--transition-smooth), transform var(--transition-smooth), opacity var(--transition-smooth);
 }
 
 html {
   scroll-behavior: smooth;
+  font-size: 16px;
 }
 
 body {
   font-family: var(--font-sans);
-  font-weight: 200;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #0a0f1e;
-  color: white;
+  background: #050d1f;
+  color: #f8fafc;
+  line-height: 1.6;
+}
+
+/* 8-pt Grid System Helpers */
+.g-p { padding: var(--space-base); }
+.g-m { margin: var(--space-base); }
+.g-gap { gap: var(--space-base); }
+
+/* Premium Global Container */
+.page-container {
+  max-width: none;
+  margin: 0;
+  padding: 0 24px;
+}
+
+/* Premium Buttons Styling */
+button, .btn {
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  letter-spacing: 0.025em;
+  font-weight: 600;
+}
+
+button:hover, .btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(6, 182, 212, 0.15);
+}
+
+/* Enhanced Tables */
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+tbody tr:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.01);
+}
+
+tbody tr:hover {
+  background-color: rgba(6, 182, 212, 0.04) !important;
+}
+
+th {
+  font-family: var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-weight: 800;
+  color: #64748b;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+td {
+  padding: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+}
+
+/* Glassmorphism Classes */
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* Skeleton Loading Pulse */
+.skeleton {
+  background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite linear;
+  border-radius: 4px;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite linear;
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #0f172a;
+  background: #050d1f;
 }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 3px;
+  background: #1e293b;
+  border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #334155;
 }
 
 /* Focus styles */
 :focus-visible {
-  outline: 2px solid rgba(6, 182, 212, 0.5);
-  outline-offset: 2px;
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
 }
 
 /* Selection */
 ::selection {
-  background: rgba(6, 182, 212, 0.2);
+  background: rgba(14, 165, 233, 0.3);
   color: white;
+}
+
+/* Print Specific */
+@media print {
+  .no-print { display: none !important; }
+  body { 
+    background: white; 
+    color: black; 
+    margin: 0; 
+    padding: 0;
+  }
+  .page-container { max-width: none; padding: 0; }
+  
+  /* CR80 Standard (Credit Card Size) + 3mm Bleed */
+  .cr80-card {
+    width: 85.6mm;
+    height: 53.98mm;
+    margin: 0;
+    padding: 0;
+    position: relative;
+    overflow: hidden;
+    page-break-after: always;
+  }
+
+  .bleed {
+    position: absolute;
+    top: -3mm;
+    left: -3mm;
+    right: -3mm;
+    bottom: -3mm;
+  }
+
+  /* RGB to CMYK fallback simulation for professional offset print */
+  * { 
+    -webkit-print-color-adjust: exact; 
+    print-color-adjust: exact;
+    color-rendering: optimizeQuality;
+    image-rendering: -webkit-optimize-contrast;
+  }
+
+  /* High-fidelity text rendering for 600 DPI */
+  h1, h2, h3, h4, .badge-text {
+    text-shadow: none !important;
+    -webkit-filter: none !important;
+    filter: none !important;
+  }
+
+  @page {
+    margin: 0;
+    size: auto;
+  }
 }

@@ -1,20 +1,24 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Globe, Upload, Save, Trash2, Clock, Users, FileText, MessageSquare } from "lucide-react";
-import { GlobalSettingsAPI } from "../../lib/broadcastApi";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { Globe, Upload, Save, Trash2, Clock, Users, Search, Check, X, AlertCircle, CheckCircle, Paperclip } from "lucide-react";
+import { EventSettingsAPI, BroadcastV2API, SportEventsAPI, GlobalSettingsAPI } from "../../lib/broadcastApi";
+import { AccreditationsAPI } from "../../lib/storage";
 import { supabase } from "../../lib/supabase";
 import { uploadToStorage } from "../../lib/uploadToStorage";
+import { ROLES } from "../../lib/utils";
+import Modal from "../ui/Modal";
+import Button from "../ui/Button";
 
 const SUB_TABS = [
-  { id: "global", label: "Global Broadcast Message", icon: Globe },
+  { id: "general", label: "General Broadcast", icon: Globe },
+  { id: "targeted", label: "Targeted Broadcast", icon: Search },
   { id: "athlete", label: "Athlete QR Broadcast", icon: Users }
 ];
 
-export default function GlobalBroadcastPanel({ onToast }) {
-  const [activeSubTab, setActiveSubTab] = useState("global");
+export default function GlobalBroadcastPanel({ eventId, onToast }) {
+  const [activeSubTab, setActiveSubTab] = useState("general");
 
   return (
     <div id="global-broadcast-panel" className="space-y-4">
-      {/* Sub-tab navigation */}
       <div className="flex gap-1 bg-gray-900 rounded-lg p-1">
         {SUB_TABS.map(tab => {
           const Icon = tab.icon;
@@ -35,295 +39,729 @@ export default function GlobalBroadcastPanel({ onToast }) {
         })}
       </div>
 
-      {activeSubTab === "global" && <GlobalBroadcastPage onToast={onToast} />}
-      {activeSubTab === "athlete" && <AthleteQRBroadcastPage onToast={onToast} />}
+      {activeSubTab === "general" && <GeneralBroadcastPage eventId={eventId} onToast={onToast} />}
+      {activeSubTab === "targeted" && <TargetedBroadcastPage eventId={eventId} onToast={onToast} />}
+      {activeSubTab === "athlete" && <AthleteQRBroadcastPage eventId={eventId} onToast={onToast} />}
     </div>
   );
 }
 
-/* ─── Global Broadcast Message Page ─────────────────────────── */
-function GlobalBroadcastPage({ onToast }) {
+/* ─── Success Confirmation Overlay ──────────────────────────── */
+function SuccessOverlay({ show, message, onClose }) {
+  if (!show) return null;
+  return (
+    <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center" onClick={onClose}>
+      <div 
+        className="bg-gray-800 border border-emerald-500/30 rounded-3xl p-8 max-w-sm mx-4 text-center shadow-2xl shadow-emerald-900/20 transform animate-bounce-in"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="w-16 h-16 mx-auto mb-4 bg-emerald-500/20 rounded-full flex items-center justify-center border border-emerald-500/30">
+          <CheckCircle className="w-8 h-8 text-emerald-400" />
+        </div>
+        <h3 className="text-xl font-black text-white uppercase tracking-tight mb-2">Broadcast Sent!</h3>
+        <p className="text-gray-400 text-sm font-medium mb-6">{message}</p>
+        <button 
+          onClick={onClose}
+          className="px-8 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition-all w-full"
+        >
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ─── General Broadcast Page (Strictly Global) ──────────────── */
+function GeneralBroadcastPage({ eventId, onToast }) {
   const [message, setMessage] = useState("");
-  const [globalPdfUrl, setGlobalPdfUrl] = useState("");
-  const [eventResultPdfUrl, setEventResultPdfUrl] = useState("");
-  const [pdfUpdatedAt, setPdfUpdatedAt] = useState(null);
-  const [eventResultUpdatedAt, setEventResultUpdatedAt] = useState(null);
+  const [saving, setSaving] = useState(false);
   const [msgUpdatedAt, setMsgUpdatedAt] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [pdfUploading, setPdfUploading] = useState(false);
-  const [eventResultUploading, setEventResultUploading] = useState(false);
+  const [successInfo, setSuccessInfo] = useState(null);
+  const [attachmentFile, setAttachmentFile] = useState(null);
+  const [currentAttachment, setCurrentAttachment] = useState(null);
+  const [deletingAttachment, setDeletingAttachment] = useState(false);
+  const attachInputRef = useRef(null);
 
-  const globalPdfInputRef = useRef(null);
-  const eventResultInputRef = useRef(null);
+  useEffect(() => { if (eventId) loadLatest(); }, [eventId]);
 
-  useEffect(() => { loadSettings(); }, []);
-
-  const loadSettings = async () => {
-    const all = await GlobalSettingsAPI.getAll();
-    setMessage(all["global_broadcast_message"] || "");
-    setGlobalPdfUrl(all["global_pdf_url"] || "");
-    setEventResultPdfUrl(all["global_event_result_pdf_url"] || "");
-    setPdfUpdatedAt(all["global_pdf_updated_at"] || null);
-    setEventResultUpdatedAt(all["global_event_result_pdf_updated_at"] || null);
-    setMsgUpdatedAt(all["global_message_updated_at"] || null);
+  const loadLatest = async () => {
+    try {
+      const { data: broadcasts } = await supabase
+        .from("broadcasts_v2")
+        .select("id, message, created_at, attachment_url, attachment_name")
+        .eq("event_id", eventId)
+        .eq("type", "global")
+        .is("target_roles", null)
+        .is("target_zones", null)
+        .is("deleted_at", null)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      
+      if (broadcasts?.[0]) {
+        const b = broadcasts[0];
+        setMessage(b.message || "");
+        setMsgUpdatedAt(b.created_at);
+        if (b.attachment_url) setCurrentAttachment({ url: b.attachment_url, name: b.attachment_name, broadcastId: b.id });
+      }
+    } catch (err) { console.error(err); }
   };
 
   const saveMessage = async () => {
-    if (message.length > 2000) { onToast?.("Message exceeds 2000 characters", "error"); return; }
+    if (!message.trim()) { onToast?.("Please enter a message", "error"); return; }
     setSaving(true);
     try {
-      await GlobalSettingsAPI.setMany({
-        global_broadcast_message: message,
-        global_message_updated_at: new Date().toISOString()
-      });
-      setMsgUpdatedAt(new Date().toISOString());
-      onToast?.("Global message published", "success");
-    } catch { onToast?.("Failed to save message", "error"); }
+      let attachmentUrl = null, attachmentName = null;
+      if (attachmentFile) {
+        const { url, filename } = await uploadToStorage(attachmentFile, "broadcast-attachments");
+        attachmentUrl = url; attachmentName = attachmentFile.name || filename;
+      }
+      await BroadcastV2API.sendGlobal(message, eventId, attachmentUrl, attachmentName, null, null);
+      setSuccessInfo("General broadcast sent to all participants.");
+      loadLatest();
+    } catch (err) { onToast?.("Failed: " + err.message, "error"); }
     finally { setSaving(false); }
   };
 
-  const uploadPdf = async (file, settingKey, updatedAtKey, setUrl, setTs, setUploading) => {
-    if (!file) return;
-    if (file.size > 10 * 1024 * 1024) { onToast?.("PDF must be under 10 MB", "error"); return; }
-    setUploading(true);
-    try {
-      const result = await uploadToStorage(file, "broadcasts");
-      const now = new Date().toISOString();
-      await GlobalSettingsAPI.setMany({ [settingKey]: result.url, [updatedAtKey]: now });
-      setUrl(result.url);
-      setTs(now);
-      onToast?.("PDF uploaded successfully", "success");
-    } catch (err) { onToast?.("Upload failed: " + (err.message || ""), "error"); }
-    finally { setUploading(false); }
-  };
-
-  const removePdf = async (settingKey, updatedAtKey, setUrl, setTs) => {
-    await GlobalSettingsAPI.setMany({ [settingKey]: "", [updatedAtKey]: "" });
-    setUrl(""); setTs(null);
-    onToast?.("PDF removed", "success");
-  };
-
-  const formatUTC = (ts) => ts ? new Date(ts).toUTCString().replace(" GMT", " UTC") : null;
-
   return (
-    <div className="space-y-6">
-      {/* Broadcast Message */}
-      <div className="bg-gray-800 rounded-lg p-5 border border-gray-700">
-        <div className="flex items-center gap-2 mb-4">
-          <Globe className="w-5 h-5 text-blue-400" />
-          <h3 className="text-lg font-extralight text-white">Global QR Broadcast Message</h3>
-        </div>
-        <p className="text-gray-400 font-extralight text-lg mb-3">
-          Shown on every QR scan page instantly after publishing.
-        </p>
-        <textarea
-          value={message}
-          onChange={e => setMessage(e.target.value)}
-          maxLength={2000}
-          rows={6}
-          placeholder="Enter global broadcast message..."
-          className="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white font-extralight text-lg resize-none focus:outline-none focus:border-blue-500"
-        />
-        <div className="flex items-center justify-between mt-2">
-          <span className="text-gray-500 font-extralight text-lg">{message.length}/2000</span>
-          {msgUpdatedAt && (
-            <span className="text-gray-500 font-extralight text-lg flex items-center gap-1">
-              <Clock className="w-4 h-4" />
-              Last published: {formatUTC(msgUpdatedAt)}
-            </span>
-          )}
-        </div>
-        <div className="flex gap-3 mt-4">
-          <button
-            onClick={saveMessage}
-            disabled={saving}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-extralight text-lg transition-colors"
-          >
-            <Save className="w-4 h-4" />
-            {saving ? "Publishing..." : "Publish Message"}
-          </button>
-          {message && (
-            <button
-              onClick={() => setMessage("")}
-              className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg font-extralight text-lg transition-colors"
-            >
-              <Trash2 className="w-4 h-4" /> Clear
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* PDF Slots — side by side */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Global PDF Slot */}
-        <PdfSlotCard
-          label="Global PDF Slot"
-          description="Visible to all QR scan pages."
-          color="green"
-          url={globalPdfUrl}
-          updatedAt={pdfUpdatedAt}
-          uploading={pdfUploading}
-          inputRef={globalPdfInputRef}
-          onUpload={file => uploadPdf(file, "global_pdf_url", "global_pdf_updated_at", setGlobalPdfUrl, setPdfUpdatedAt, setPdfUploading)}
-          onRemove={() => removePdf("global_pdf_url", "global_pdf_updated_at", setGlobalPdfUrl, setPdfUpdatedAt)}
-          formatUTC={formatUTC}
-        />
-
-        {/* Event Result PDF Slot */}
-        <PdfSlotCard
-          label="Event Result PDF"
-          description="Global event result shown on all QR scan pages."
-          color="purple"
-          url={eventResultPdfUrl}
-          updatedAt={eventResultUpdatedAt}
-          uploading={eventResultUploading}
-          inputRef={eventResultInputRef}
-          onUpload={file => uploadPdf(file, "global_event_result_pdf_url", "global_event_result_pdf_updated_at", setEventResultPdfUrl, setEventResultUpdatedAt, setEventResultUploading)}
-          onRemove={() => removePdf("global_event_result_pdf_url", "global_event_result_pdf_updated_at", setEventResultPdfUrl, setEventResultUpdatedAt)}
-          formatUTC={formatUTC}
-        />
-      </div>
-    </div>
-  );
-}
-
-/* ─── Reusable PDF Slot Card ─────────────────────────────────── */
-function PdfSlotCard({ label, description, color, url, updatedAt, uploading, inputRef, onUpload, onRemove, formatUTC }) {
-  const colorMap = {
-    green: { border: "border-green-500", bg: "bg-green-600 hover:bg-green-700", text: "text-green-400", dashed: "hover:border-green-500", icon: "text-green-400" },
-    purple: { border: "border-purple-500", bg: "bg-purple-600 hover:bg-purple-700", text: "text-purple-400", dashed: "hover:border-purple-500", icon: "text-purple-400" }
-  };
-  const c = colorMap[color] || colorMap.green;
-
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file) { onUpload(file); e.target.value = ""; }
-  };
-
-  return (
-    <div className="bg-gray-800 rounded-lg p-5 border border-gray-700">
-      <div className="flex items-center gap-2 mb-2">
-        <Upload className={`w-5 h-5 ${c.icon}`} />
-        <h3 className="text-lg font-extralight text-white">{label}</h3>
-      </div>
-      <p className="text-gray-400 font-extralight text-lg mb-4">{description}</p>
-
-      {url ? (
-        <div className="space-y-2">
-          <div className={`border ${c.border} rounded-lg px-4 py-3 bg-gray-900`}>
-            <p className="text-white font-extralight text-lg">PDF Active</p>
-            {updatedAt && (
-              <p className="text-gray-400 font-extralight text-lg flex items-center gap-1 mt-1">
-                <Clock className="w-4 h-4" />
-                Updated: {formatUTC(updatedAt)}
-              </p>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <a href={url} target="_blank" rel="noopener noreferrer"
-              className={`${c.bg} text-white px-3 py-1.5 rounded font-extralight text-lg transition-colors`}>
-              View
-            </a>
-            <label className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded font-extralight text-lg cursor-pointer transition-colors">
-              Replace
-              <input type="file" accept=".pdf" className="hidden" onChange={handleFileChange} />
-            </label>
-            <button onClick={onRemove}
-              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded font-extralight text-lg transition-colors">
-              <Trash2 className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      ) : (
-        <label className={`flex flex-col items-center justify-center border-2 border-dashed border-gray-600 ${c.dashed} rounded-lg py-8 cursor-pointer transition-colors`}>
-          <Upload className={`w-8 h-8 ${c.icon} mb-2`} />
-          <span className="text-gray-300 font-extralight text-lg">
-            {uploading ? "Uploading..." : `Click to upload ${label}`}
-          </span>
-          <span className="text-gray-500 font-extralight text-lg mt-1">Max 10 MB · PDF only</span>
-          <input type="file" accept=".pdf" className="hidden" onChange={handleFileChange} disabled={uploading} />
+    <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-xl space-y-6">
+      <SuccessOverlay show={!!successInfo} message={successInfo} onClose={() => setSuccessInfo(null)} />
+      <div className="flex items-center gap-2"><Globe className="w-5 h-5 text-emerald-400" /><h3 className="text-xl font-bold text-white uppercase tracking-tight">General Broadcast</h3></div>
+      <div className="p-4 bg-emerald-500/10 rounded-2xl border border-emerald-500/20"><p className="text-emerald-400 text-xs font-black uppercase tracking-widest">Audience: Everyone</p></div>
+      <textarea value={message} onChange={e => setMessage(e.target.value)} rows={5} placeholder="Message for everyone..." className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:border-emerald-500 outline-none transition-all resize-none" />
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-2 cursor-pointer px-4 py-2 bg-gray-900 border border-gray-700 rounded-xl text-sm text-gray-300">
+          <Paperclip className="w-4 h-4 text-emerald-400" />
+          <span>{attachmentFile ? attachmentFile.name : currentAttachment ? "Replace PDF" : "Attach PDF/Image"}</span>
+          <input ref={attachInputRef} type="file" accept=".pdf,image/*" className="hidden" onChange={e => setAttachmentFile(e.target.files?.[0] || null)} />
         </label>
-      )}
+        <Button onClick={saveMessage} variant="primary" loading={saving} icon={Save}>Send to Everyone</Button>
+      </div>
     </div>
   );
 }
 
-/* ─── Athlete QR Broadcast Page ──────────────────────────────── */
-function AthleteQRBroadcastPage({ onToast }) {
+/* ─── Targeted Broadcast Page (Roles & Zones) ────────────────── */
+function TargetedBroadcastPage({ eventId, onToast }) {
   const [message, setMessage] = useState("");
-  const [updatedAt, setUpdatedAt] = useState(null);
+  const [targets, setTargets] = useState([]);
+  const [selectedZones, setSelectedZones] = useState([]);
+  const [eventZones, setEventZones] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [successInfo, setSuccessInfo] = useState(null);
+  const [attachmentFile, setAttachmentFile] = useState(null);
 
-  useEffect(() => { loadSettings(); }, []);
+  useEffect(() => {
+    if (eventId) {
+      supabase.from("zones").select("code, name").eq("event_id", eventId).order("code").then(({ data }) => setEventZones(data || []));
+    }
+  }, [eventId]);
 
-  const loadSettings = async () => {
-    const all = await GlobalSettingsAPI.getAll();
-    setMessage(all["athlete_qr_broadcast_message"] || "");
-    setUpdatedAt(all["athlete_qr_broadcast_updated_at"] || null);
-  };
+  const toggleTarget = role => setTargets(prev => prev.includes(role) ? prev.filter(r => r !== role) : [...prev, role]);
+  const toggleZone = code => setSelectedZones(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
 
   const saveMessage = async () => {
-    if (message.length > 2000) { onToast?.("Message exceeds 2000 characters", "error"); return; }
+    if (!message.trim()) { onToast?.("Enter a message", "error"); return; }
+    if (targets.length === 0 && selectedZones.length === 0) { onToast?.("Select at least one role or zone", "error"); return; }
     setSaving(true);
     try {
-      await GlobalSettingsAPI.setMany({
-        athlete_qr_broadcast_message: message,
-        athlete_qr_broadcast_updated_at: new Date().toISOString()
-      });
-      setUpdatedAt(new Date().toISOString());
-      onToast?.("Athlete QR broadcast published", "success");
-    } catch { onToast?.("Failed to save message", "error"); }
+      let attachmentUrl = null, attachmentName = null;
+      if (attachmentFile) {
+        const { url, filename } = await uploadToStorage(attachmentFile, "broadcast-attachments");
+        attachmentUrl = url; attachmentName = attachmentFile.name || filename;
+      }
+      await BroadcastV2API.sendGlobal(message, eventId, attachmentUrl, attachmentName, targets, selectedZones);
+      setSuccessInfo(`Targeted broadcast sent to ${targets.length} roles and ${selectedZones.length} zones.`);
+      setMessage(""); setTargets([]); setSelectedZones([]); setAttachmentFile(null);
+    } catch (err) { onToast?.("Failed: " + err.message, "error"); }
     finally { setSaving(false); }
   };
 
-  const formatUTC = (ts) => ts ? new Date(ts).toUTCString().replace(" GMT", " UTC") : null;
-
   return (
-    <div className="space-y-6">
-      <div className="bg-gray-800 rounded-lg p-5 border border-gray-700">
-        <div className="flex items-center gap-2 mb-4">
-          <Users className="w-5 h-5 text-orange-400" />
-          <h3 className="text-lg font-extralight text-white">Athlete QR Broadcast Message</h3>
+    <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-xl space-y-6">
+      <SuccessOverlay show={!!successInfo} message={successInfo} onClose={() => setSuccessInfo(null)} />
+      <div className="flex items-center gap-2"><Search className="w-5 h-5 text-blue-400" /><h3 className="text-xl font-bold text-white uppercase tracking-tight">Targeted Broadcast</h3></div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="space-y-3">
+          <span className="text-xs font-bold text-gray-500 uppercase tracking-widest px-1">Roles</span>
+          <div className="flex flex-wrap gap-2">{ROLES.map(role => (
+            <button key={role} onClick={() => toggleTarget(role)} className={`px-4 py-2 rounded-xl border text-xs font-bold transition-all ${targets.includes(role) ? "bg-blue-600 border-blue-500 text-white shadow-lg" : "bg-gray-900 border-gray-700 text-gray-400"}`}>{role}</button>
+          ))}</div>
         </div>
-        <p className="text-gray-400 font-extralight text-lg mb-3">
-          Shown specifically on Athlete QR scan pages instantly after publishing.
-        </p>
-        <textarea
-          value={message}
-          onChange={e => setMessage(e.target.value)}
-          maxLength={2000}
-          rows={6}
-          placeholder="Enter athlete-specific broadcast message..."
-          className="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white font-extralight text-lg resize-none focus:outline-none focus:border-orange-500"
-        />
-        <div className="flex items-center justify-between mt-2">
-          <span className="text-gray-500 font-extralight text-lg">{message.length}/2000</span>
-          {updatedAt && (
-            <span className="text-gray-500 font-extralight text-lg flex items-center gap-1">
-              <Clock className="w-4 h-4" />
-              Last published: {formatUTC(updatedAt)}
-            </span>
-          )}
-        </div>
-        <div className="flex gap-3 mt-4">
-          <button
-            onClick={saveMessage}
-            disabled={saving}
-            className="flex items-center gap-2 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-extralight text-lg transition-colors"
-          >
-            <Save className="w-4 h-4" />
-            {saving ? "Publishing..." : "Publish Message"}
-          </button>
-          {message && (
-            <button
-              onClick={() => setMessage("")}
-              className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg font-extralight text-lg transition-colors"
-            >
-              <Trash2 className="w-4 h-4" /> Clear
-            </button>
-          )}
+        <div className="space-y-3">
+          <span className="text-xs font-bold text-gray-500 uppercase tracking-widest px-1">Zones</span>
+          <div className="flex flex-wrap gap-2">{eventZones.map(zone => (
+            <button key={zone.code} onClick={() => toggleZone(zone.code)} className={`px-4 py-2 rounded-xl border text-xs font-bold transition-all ${selectedZones.includes(zone.code) ? "bg-orange-600 border-orange-500 text-white shadow-lg" : "bg-gray-900 border-gray-700 text-gray-400"}`}><span className="opacity-60 mr-1.5">{zone.code}</span>{zone.name}</button>
+          ))}</div>
         </div>
       </div>
+      <textarea value={message} onChange={e => setMessage(e.target.value)} rows={4} placeholder="Message for targeted groups..." className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:border-blue-500 outline-none transition-all resize-none" />
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-2 cursor-pointer px-4 py-2 bg-gray-900 border border-gray-700 rounded-xl text-sm text-gray-300">
+          <Paperclip className="w-4 h-4 text-blue-400" />
+          <span>{attachmentFile ? attachmentFile.name : "Attach File"}</span>
+          <input type="file" accept=".pdf,image/*" className="hidden" onChange={e => setAttachmentFile(e.target.files?.[0] || null)} />
+        </label>
+        <Button onClick={saveMessage} variant="primary" loading={saving} icon={Save}>Send to Targeted Audience</Button>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Athlete Broadcast Page (Granular Multi-Select) ────────── */
+function AthleteQRBroadcastPage({ eventId, onToast }) {
+  const [message, setMessage] = useState("");
+  const [search, setSearch] = useState("");
+  const [clubs, setClubs] = useState([]);
+  const [selectedClubs, setSelectedClubs] = useState([]);
+  const [sportEvents, setSportEvents] = useState([]);
+  const [selectedHeats, setSelectedHeats] = useState([]);
+  const [athletes, setAthletes] = useState([]);
+  const [selectedAthletes, setSelectedAthletes] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [successInfo, setSuccessInfo] = useState(null);
+  const [attachmentFile, setAttachmentFile] = useState(null);
+  const [currentAttachment, setCurrentAttachment] = useState(null); // { url, name, broadcastId }
+  const [deletingAttachment, setDeletingAttachment] = useState(false);
+  const attachInputRef = useRef(null);
+
+  // Load latest athlete broadcast attachment
+  useEffect(() => {
+    if (!eventId) return;
+    supabase
+      .from("broadcasts_v2")
+      .select("id, attachment_url, attachment_name")
+      .eq("event_id", eventId)
+      .eq("type", "athlete")
+      .is("deleted_at", null)
+      .not("attachment_url", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .then(({ data }) => {
+        if (data && data.length > 0 && data[0].attachment_url) {
+          setCurrentAttachment({ url: data[0].attachment_url, name: data[0].attachment_name || "Attached File", broadcastId: data[0].id });
+        }
+      });
+  }, [eventId]);
+
+  const deleteCurrentAttachment = async () => {
+    if (!currentAttachment?.broadcastId) return;
+    setDeletingAttachment(true);
+    try {
+      const { error } = await supabase
+        .from("broadcasts_v2")
+        .update({ attachment_url: null, attachment_name: null })
+        .eq("id", currentAttachment.broadcastId);
+      if (error) throw error;
+      setCurrentAttachment(null);
+      onToast?.("Attachment removed", "success");
+    } catch (err) {
+      onToast?.("Failed to delete attachment: " + err.message, "error");
+    } finally {
+      setDeletingAttachment(false);
+    }
+  };
+
+  // Load registered clubs and map raw DB names to them
+  const [rawToRegisteredMap, setRawToRegisteredMap] = useState({});
+
+  useEffect(() => {
+    const fetchRegisteredClubs = async () => {
+      try {
+        // 1. Fetch registered clubs list (normalized objects)
+        const registeredClubs = await GlobalSettingsAPI.getClubs(eventId);
+        setClubs(registeredClubs);
+
+        // 2. Fetch all unique raw club names in the database for this event
+        const { data: dbData } = await supabase
+          .from("accreditations")
+          .select("club")
+          .eq("event_id", eventId);
+        
+        const rawNames = [...new Set((dbData || []).map(a => a.club).filter(Boolean))];
+
+        // 3. Create a mapping from raw names to registered names
+        const mapping = {};
+        rawNames.forEach(raw => {
+          const cleanRaw = raw.replace(/\s*\(.*?\)\s*/g, " ").trim().toLowerCase();
+          
+          const match = registeredClubs.find(reg => {
+            const regFull = typeof reg === 'string' ? reg : reg.full;
+            const cleanReg = regFull.replace(/\s*\(.*?\)\s*/g, " ").trim().toLowerCase();
+            return cleanReg === cleanRaw || regFull.toLowerCase() === raw.toLowerCase();
+          });
+
+          if (match) {
+            mapping[raw] = typeof match === 'string' ? match : match.full;
+          } else {
+            // Check if raw is already in the clubs list
+            const alreadyExists = registeredClubs.some(c => (c.full || c) === raw);
+            if (!alreadyExists) {
+              setClubs(prev => {
+                const names = prev.map(c => typeof c === 'string' ? c : c.full);
+                if (!names.includes(raw)) {
+                  const newList = [...prev, { short: raw, full: raw, fileRegistered: 0 }];
+                  return newList.sort((a, b) => {
+                    const nameA = typeof a === 'string' ? a : a.full;
+                    const nameB = typeof b === 'string' ? b : b.full;
+                    return nameA.localeCompare(nameB);
+                  });
+                }
+                return prev;
+              });
+            }
+          }
+        });
+        setRawToRegisteredMap(mapping);
+
+      } catch (err) {
+        console.error("Failed to fetch clubs:", err);
+      }
+    };
+    if (eventId) fetchRegisteredClubs();
+  }, [eventId]);
+
+  // Load sport events / heats from the sport_events table
+  useEffect(() => {
+    const fetchSportEvents = async () => {
+      try {
+        const events = await SportEventsAPI.getByEventId(eventId);
+        setSportEvents(events || []);
+      } catch (err) {
+        console.error("Failed to load sport events:", err);
+        setSportEvents([]);
+      }
+    };
+    if (eventId) fetchSportEvents();
+  }, [eventId]);
+
+  // Debounced search for athletes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (search.length >= 2 || selectedClubs.length > 0 || selectedHeats.length > 0) {
+        fetchAthletes();
+      } else {
+        setAthletes([]);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search, selectedClubs, selectedHeats]);
+
+  const fetchAthletes = async () => {
+    setLoading(true);
+    try {
+      // Map selected registered names back to ALL raw names they represent
+      const rawFilter = selectedClubs.length > 0 
+        ? Object.entries(rawToRegisteredMap)
+            .filter(([raw, registered]) => selectedClubs.includes(registered))
+            .map(([raw]) => raw)
+            .concat(selectedClubs.filter(sc => !Object.values(rawToRegisteredMap).includes(sc))) // Include ones with no mapping
+        : [];
+
+      const results = await AccreditationsAPI.search(eventId, {
+        club: rawFilter.length > 0 ? rawFilter : [],
+        heat: selectedHeats,
+        name: search,
+        limit: 200
+      });
+      
+      // If heats are selected, filter client-side by sport event codes
+      let filtered = results || [];
+      if (selectedHeats.length > 0) {
+        filtered = filtered.filter(a => {
+          const athleteEvents = a.selectedSportEvents || [];
+          return athleteEvents.some(se => selectedHeats.includes(se.eventCode));
+        });
+      }
+      
+      setAthletes(filtered);
+    } catch (err) { 
+      console.error(err); 
+      onToast?.("Search failed: " + err.message, "error");
+    }
+    finally { setLoading(false); }
+  };
+
+  // Bulk-fetch ALL athletes from selected clubs/heats (up to 500) and add to selectedAthletes
+  const loadAllFromFilters = async () => {
+    if (selectedClubs.length === 0 && selectedHeats.length === 0 && !search.trim()) {
+      onToast?.("Please select at least one club, heat, or enter a search name first.", "error");
+      return;
+    }
+    setLoadingAll(true);
+    try {
+      const rawFilter = selectedClubs.length > 0 
+        ? Object.entries(rawToRegisteredMap)
+            .filter(([raw, registered]) => selectedClubs.includes(registered))
+            .map(([raw]) => raw)
+            .concat(selectedClubs.filter(sc => !Object.values(rawToRegisteredMap).includes(sc)))
+        : [];
+
+      const results = await AccreditationsAPI.search(eventId, {
+        club: rawFilter.length > 0 ? rawFilter : [],
+        heat: selectedHeats,
+        name: search,
+        limit: 500
+      });
+      let filtered = results || [];
+      if (selectedHeats.length > 0) {
+        filtered = filtered.filter(a => {
+          const athleteEvents = a.selectedSportEvents || [];
+          return athleteEvents.some(se => selectedHeats.includes(se.eventCode));
+        });
+      }
+      const newSelections = filtered.filter(a => !selectedAthletes.find(sa => sa.id === a.id));
+      setSelectedAthletes(prev => [...prev, ...newSelections]);
+      setAthletes(filtered);
+      onToast?.(`Added ${newSelections.length} athletes to selection.`, "success");
+    } catch (err) {
+      console.error(err);
+      onToast?.("Failed to load athletes: " + err.message, "error");
+    } finally {
+      setLoadingAll(false);
+    }
+  };
+
+  const toggleAthleteSelection = (athlete) => {
+    setSelectedAthletes(prev => 
+      prev.find(a => a.id === athlete.id) 
+        ? prev.filter(a => a.id !== athlete.id) 
+        : [...prev, athlete]
+    );
+  };
+
+  const toggleAllVisible = () => {
+    if (athletes.length === 0) return;
+    const allSelected = athletes.every(a => selectedAthletes.find(sa => sa.id === a.id));
+    if (allSelected) {
+      setSelectedAthletes(prev => prev.filter(sa => !athletes.find(a => a.id === sa.id)));
+    } else {
+      const newSelections = athletes.filter(a => !selectedAthletes.find(sa => sa.id === a.id));
+      setSelectedAthletes(prev => [...prev, ...newSelections]);
+    }
+  };
+
+  const removeSelected = (id) => {
+    setSelectedAthletes(prev => prev.filter(a => a.id !== id));
+  };
+
+  const handleSend = async () => {
+    if (!message.trim() || selectedAthletes.length === 0) return;
+    setSending(true);
+    try {
+      let attachmentUrl = null;
+      let attachmentName = null;
+      if (attachmentFile) {
+        const { url, filename } = await uploadToStorage(attachmentFile, "broadcast-attachments");
+        attachmentUrl = url;
+        attachmentName = attachmentFile.name || filename;
+      }
+      const recipientIds = selectedAthletes.map(a => a.id);
+      await BroadcastV2API.sendToAthletes(eventId, message, recipientIds, attachmentUrl, attachmentName);
+      const count = selectedAthletes.length;
+      const names = selectedAthletes.slice(0, 3).map(a => `${a.firstName} ${a.lastName}`).join(", ");
+      const extra = count > 3 ? ` and ${count - 3} more` : "";
+      setSuccessInfo(`Message sent to ${count} athlete${count > 1 ? "s" : ""}: ${names}${extra}`);
+      setMessage("");
+      setAttachmentFile(null);
+      if (attachInputRef.current) attachInputRef.current.value = "";
+      setSelectedAthletes([]);
+      setConfirmOpen(false);
+    } catch (err) {
+      onToast?.("Failed to send: " + err.message, "error");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-xl space-y-8">
+      <SuccessOverlay 
+        show={!!successInfo} 
+        message={successInfo} 
+        onClose={() => setSuccessInfo(null)} 
+      />
+
+      <div className="flex items-center gap-2 mb-2">
+        <Users className="w-5 h-5 text-orange-400" />
+        <h3 className="text-xl font-bold text-white uppercase tracking-tight">Athlete Target Broadcast</h3>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Selection Interface */}
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Filter Clubs</label>
+              <div className="bg-gray-900 border border-gray-700 rounded-xl p-2 max-h-40 overflow-y-auto space-y-1">
+                {clubs.map((club, idx) => {
+                  const clubName = typeof club === 'string' ? club : club.full;
+                  const clubKey = typeof club === 'string' ? club : (club.id || clubName || idx);
+                  return (
+                    <label key={clubKey} className="flex items-center gap-2 px-2 py-1 hover:bg-gray-800 rounded cursor-pointer transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={selectedClubs.includes(clubName) || selectedClubs.includes(club)}
+                        onChange={() => {
+                          const targetValue = typeof club === 'string' ? club : club.full;
+                          setSelectedClubs(prev => 
+                            prev.includes(targetValue) ? prev.filter(c => c !== targetValue && c.full !== targetValue) : [...prev, targetValue]
+                          );
+                        }}
+                        className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-0"
+                      />
+                      <span className="text-sm text-gray-300 truncate">{clubName}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Filter Events / Heats</label>
+              <div className="bg-gray-900 border border-gray-700 rounded-xl p-2 max-h-40 overflow-y-auto space-y-1">
+                {sportEvents.length > 0 ? sportEvents.map(ev => (
+                  <label key={ev.eventCode} className="flex items-center gap-2 px-2 py-1 hover:bg-gray-800 rounded cursor-pointer transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={selectedHeats.includes(ev.eventCode)}
+                      onChange={() => setSelectedHeats(prev => prev.includes(ev.eventCode) ? prev.filter(h => h !== ev.eventCode) : [...prev, ev.eventCode])}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-0"
+                    />
+                    <span className="text-sm text-gray-300 truncate" title={ev.eventName}>
+                      <span className="text-cyan-400 font-bold mr-1">{ev.eventCode}</span>
+                      {ev.eventName}
+                    </span>
+                  </label>
+                )) : (
+                  <p className="text-xs text-gray-600 p-2">No sport events found for this event</p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div>
+             <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+              <input
+                type="text"
+                placeholder="Search athlete name..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded-xl pl-10 pr-4 py-3 text-white placeholder-gray-600 focus:border-blue-500 outline-none transition-all"
+              />
+            </div>
+          </div>
+
+          {/* Bulk Load Button */}
+          {(selectedClubs.length > 0 || selectedHeats.length > 0 || search.trim()) && (
+            <button
+              onClick={loadAllFromFilters}
+              disabled={loadingAll}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-gradient-to-r from-blue-700 to-blue-600 hover:from-blue-600 hover:to-blue-500 text-white font-bold text-sm transition-all disabled:opacity-50 shadow-lg shadow-blue-900/30"
+            >
+              {loadingAll ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                  Loading all athletes...
+                </>
+              ) : (
+                <>
+                  <Users className="w-4 h-4" />
+                  Load All Matching Athletes into Selection
+                  {selectedClubs.length > 0 && <span className="text-blue-200 text-xs">({selectedClubs.join(", ")})</span>}
+                </>
+              )}
+            </button>
+          )}
+
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl overflow-hidden">
+            <div className="bg-gray-800/50 px-4 py-2 border-b border-gray-700 flex justify-between items-center text-xs font-bold uppercase tracking-widest text-gray-400">
+              <span>Search Results ({athletes.length})</span>
+              <button onClick={toggleAllVisible} className="text-blue-400 hover:text-blue-300 transition-colors">Select All Shown</button>
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {loading ? (
+                <div className="p-8 text-center text-gray-500 animate-pulse text-sm">Searching athletes...</div>
+              ) : athletes.length > 0 ? (
+                athletes.map(a => {
+                  const isSelected = selectedAthletes.find(sa => sa.id === a.id);
+                  return (
+                    <div
+                      key={a.id}
+                      onClick={() => toggleAthleteSelection(a)}
+                      className={`flex items-center justify-between px-4 py-3 cursor-pointer transition-colors border-b border-gray-800 last:border-0 ${
+                        isSelected ? "bg-blue-600/10" : "hover:bg-gray-800/50"
+                      }`}
+                    >
+                      <div>
+                        <p className={`font-bold text-sm ${isSelected ? "text-blue-400" : "text-white"}`}>
+                          {a.firstName} {a.lastName}
+                        </p>
+                        <p className="text-[10px] text-gray-500 uppercase font-black">{a.club || "No Club"}</p>
+                      </div>
+                      <div className={`p-1.5 rounded-full border transition-all ${
+                        isSelected ? "bg-blue-600 border-blue-500 text-white" : "border-gray-700 text-transparent"
+                      }`}>
+                        <Check className="w-3 h-3" />
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="p-8 text-center text-gray-600 text-sm">No athletes matching criteria</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Message and Selection Summary */}
+        <div className="space-y-6">
+          <div>
+            <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-3">Athletes Selected ({selectedAthletes.length})</label>
+            <div className="bg-gray-900/50 border border-gray-700 rounded-xl p-3 min-h-[140px] max-h-[200px] overflow-y-auto">
+              {selectedAthletes.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {selectedAthletes.map(a => (
+                    <div key={a.id} className="flex items-center gap-1.5 bg-gray-800 text-gray-200 pl-3 pr-1 py-1 rounded-lg border border-gray-700 text-xs font-bold">
+                      <span className="max-w-[120px] truncate">{a.firstName} {a.lastName}</span>
+                      <button onClick={() => removeSelected(a.id)} className="p-1 hover:text-red-400 transition-colors">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-gray-600 py-4">
+                  <Users className="w-8 h-8 mb-2 opacity-10" />
+                  <p className="text-sm">Select athletes from the search list</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-3">Athlete Broadcast Message</label>
+            <textarea
+              value={message}
+              onChange={e => setMessage(e.target.value)}
+              maxLength={1000}
+              rows={4}
+              placeholder="Private message for selected athletes..."
+              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white font-medium focus:border-orange-500 outline-none transition-all resize-none"
+            />
+          </div>
+
+          {/* File Attachment */}
+          <div>
+            <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Attachment (optional)</label>
+
+            {/* Live attachment pill */}
+            {currentAttachment && !attachmentFile && (
+              <div className="flex items-center gap-2 mb-2 px-3 py-2 bg-orange-500/10 border border-orange-500/20 rounded-lg">
+                <Paperclip className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" />
+                <a href={currentAttachment.url} target="_blank" rel="noopener noreferrer"
+                  className="text-sm text-orange-300 hover:text-orange-200 truncate flex-1 font-medium">
+                  {currentAttachment.name}
+                </a>
+                <span className="text-[10px] text-emerald-500 font-black uppercase tracking-widest flex-shrink-0">● Live</span>
+              </div>
+            )}
+
+            {/* Upload + Delete row */}
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 cursor-pointer px-4 py-2 bg-gray-900 border border-gray-700 hover:border-orange-500 rounded-xl text-sm text-gray-300 transition-all">
+                <Paperclip className="w-4 h-4 text-orange-400" />
+                <span>
+                  {attachmentFile
+                    ? attachmentFile.name
+                    : currentAttachment
+                      ? "Replace PDF / Image"
+                      : "Attach PDF or Image"}
+                </span>
+                <input
+                  ref={attachInputRef}
+                  type="file"
+                  accept=".pdf,image/*"
+                  className="hidden"
+                  onChange={e => setAttachmentFile(e.target.files?.[0] || null)}
+                />
+              </label>
+
+              {/* Delete button — always visible */}
+              <button
+                onClick={() => {
+                  if (attachmentFile) {
+                    setAttachmentFile(null);
+                    if (attachInputRef.current) attachInputRef.current.value = "";
+                  } else if (currentAttachment) {
+                    deleteCurrentAttachment();
+                  }
+                }}
+                disabled={deletingAttachment || (!attachmentFile && !currentAttachment)}
+                title={attachmentFile ? "Cancel selection" : "Delete attachment"}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-sm font-bold transition-all ${
+                  (attachmentFile || currentAttachment)
+                    ? "bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20 hover:border-red-500/50 cursor-pointer"
+                    : "bg-gray-800 border-gray-700 text-gray-600 cursor-not-allowed"
+                }`}
+              >
+                {deletingAttachment
+                  ? <span className="w-4 h-4 block border-2 border-red-400/30 border-t-red-400 rounded-full animate-spin" />
+                  : <Trash2 className="w-4 h-4" />
+                }
+                <span>Delete</span>
+              </button>
+            </div>
+          </div>
+
+          <Button
+            onClick={() => setConfirmOpen(true)}
+            variant="primary"
+            disabled={selectedAthletes.length === 0 || !message.trim()}
+            className="w-full py-4 rounded-2xl bg-gradient-to-r from-orange-600 to-orange-500 hover:from-orange-500 hover:to-orange-400 border-none text-white text-lg shadow-xl shadow-orange-900/20"
+          >
+            Send Broadcast to {selectedAthletes.length} Athletes
+          </Button>
+        </div>
+      </div>
+
+      {/* Confirmation Modal */}
+      <Modal isOpen={confirmOpen} onClose={() => setConfirmOpen(false)} title="Confirm Broadcast">
+        <div className="space-y-4">
+          <div className="p-4 bg-orange-500/10 border border-orange-500/20 rounded-2xl flex gap-4">
+            <AlertCircle className="w-6 h-6 text-orange-400 flex-shrink-0" />
+            <div>
+              <p className="text-white font-bold">Ready to send?</p>
+              <p className="text-gray-400 text-sm mt-1">
+                You are about to send a message to <span className="text-orange-400 font-bold">{selectedAthletes.length}</span> athletes. 
+                This will appear instantly on their QR scan pages.
+              </p>
+            </div>
+          </div>
+          <div className="max-h-32 overflow-y-auto bg-gray-900/50 rounded-xl p-3 border border-gray-700">
+            <p className="text-xs text-gray-500 font-bold uppercase tracking-widest mb-2">Recipients:</p>
+            <div className="flex flex-wrap gap-1">
+              {selectedAthletes.map(a => (
+                <span key={a.id} className="text-xs bg-gray-800 text-gray-300 px-2 py-0.5 rounded border border-gray-700">
+                  {a.firstName} {a.lastName}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-6 mt-6">
+             <div className="flex gap-3">
+              <Button onClick={handleSend} loading={sending} className="flex-1 bg-orange-600 hover:bg-orange-500 py-3">
+                Yes, Send Now
+              </Button>
+              <Button onClick={() => setConfirmOpen(false)} variant="secondary" className="flex-1">
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

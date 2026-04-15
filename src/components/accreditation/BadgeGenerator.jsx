@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Download, Loader2, X, ExternalLink, Printer } from "lucide-react";
-import { downloadCardPDF, openCardPDF, printCard, PDF_SIZES } from "./cardExport";
+import { downloadCardPDF, openCardPDF, printCard, PDF_SIZES } from "./cardExport.js";
 
 export default function BadgeGenerator({ accreditation, event, zones = [], onClose, children }) {
   const [loading, setLoading] = useState(false);

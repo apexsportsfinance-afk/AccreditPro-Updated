@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
+import SearchableSelect from "../../components/ui/SearchableSelect";
 import { motion } from "motion/react";
 import EditAccreditationModal from "../../components/EditAccreditationModal";
 import {
@@ -17,9 +18,12 @@ import {
   Plus,
   AlertCircle,
   Mail,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Clock
 } from "lucide-react";
+import Skeleton from "../../components/ui/Skeleton";
 import Button from "../../components/ui/Button";
+import Input from "../../components/ui/Input";
 import Select from "../../components/ui/Select";
 import Badge from "../../components/ui/Badge";
 import Modal from "../../components/ui/Modal";
@@ -35,6 +39,7 @@ import {
   ZonesAPI,
   EventCategoriesAPI
 } from "../../lib/storage";
+import { GlobalSettingsAPI } from "../../lib/broadcastApi";
 import { supabase } from "../../lib/supabase";
 import {
   sendApprovalEmail,
@@ -43,6 +48,7 @@ import {
 import ComposeEmailModal from "../../components/accreditation/ComposeEmailModal";
 import { generatePdfAttachment } from "../../lib/pdfEmailHelper";
 import {
+  cn,
   formatDate,
   getStatusColor,
   getRoleColor,
@@ -77,14 +83,14 @@ export default function Accreditations() {
   const [zones, setZones] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [eventCategories, setEventCategories] = useState([]);
-  const [filters, setFilters] = useState({ status: "", role: "", nationality: "" });
+  const [filters, setFilters] = useState({ status: "", role: "", nationality: "", club: "" });
   const [selectedRows, setSelectedRows] = useState([]);
   const [viewModal, setViewModal] = useState({ open: false, accreditation: null });
   const [approveModal, setApproveModal] = useState({ open: false, accreditation: null });
   const [rejectModal, setRejectModal] = useState({ open: false, accreditation: null });
   const [bulkApproveModal, setBulkApproveModal] = useState(false);
-  const [approveData, setApproveData] = useState({ zoneCodes: [] });
-  const [rejectRemarks, setRejectRemarks] = useState("");
+  const [approveData, setApproveData] = useState({ zoneCodes: [], sendEmail: true });
+  const [rejectData, setRejectData] = useState({ remarks: "", sendEmail: true });
   const [downloadingId, setDownloadingId] = useState(null);
   const [pdfPreviewModal, setPdfPreviewModal] = useState({ open: false, accreditation: null });
   const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false);
@@ -105,10 +111,16 @@ export default function Accreditations() {
   const [deleting, setDeleting] = useState(false);
   const [bulkDownloading, setBulkDownloading] = useState(false);
   const [bulkEditing, setBulkEditing] = useState(false);
+  const [showBulkEditModal, setShowBulkEditModal] = useState(false);
+  const [bulkEditField, setBulkEditField] = useState("status");
+  const [bulkEditValue, setBulkEditValue] = useState("");
   const [loading, setLoading] = useState(true);
   const initializedRef = React.useRef(false);
   const [emailModal, setEmailModal] = useState({ open: false, accreditation: null });
   const [imageDownloadingId, setImageDownloadingId] = useState(null);
+  const [clubs, setClubs] = useState([]);
+  const clubsCacheRef = useRef({});
+  const categoriesCacheRef = useRef({});
 
   useEffect(() => {
     const initializeData = async () => {
@@ -135,6 +147,15 @@ export default function Accreditations() {
           } catch (ecErr) {
             console.warn("Event categories load failed (non-critical):", ecErr);
           }
+          try {
+            if (clubsCacheRef.current[targetEventId]) {
+              setClubs(clubsCacheRef.current[targetEventId]);
+            } else {
+              const clubData = await GlobalSettingsAPI.getClubs(targetEventId);
+              clubsCacheRef.current[targetEventId] = clubData;
+              setClubs(clubData);
+            }
+          } catch { setClubs([]); }
         }
       } catch (error) {
         console.error("Failed to load initial data:", error);
@@ -174,6 +195,15 @@ export default function Accreditations() {
         } catch (ecErr) {
           console.warn("Event categories (non-critical):", ecErr);
         }
+        try {
+          if (clubsCacheRef.current[selectedEvent]) {
+            setClubs(clubsCacheRef.current[selectedEvent]);
+          } else {
+            const clubData = await GlobalSettingsAPI.getClubs(selectedEvent);
+            clubsCacheRef.current[selectedEvent] = clubData;
+            setClubs(clubData);
+          }
+        } catch { setClubs([]); }
       } catch (error) {
         console.error("Failed to load event data:", error);
         toast.error("Failed to load accreditations. Please try again.");
@@ -195,11 +225,17 @@ export default function Accreditations() {
     }
   }, [selectedEvent]);
 
+  const resetFilters = useCallback(() => {
+    setFilters({ status: "", role: "", nationality: "", club: "" });
+    toast.success("Filters cleared");
+  }, [toast]);
+
   const filteredAccreditations = useMemo(() => {
     return (Array.isArray(accreditations) ? accreditations : []).filter((acc) => {
       if (filters.status && acc.status !== filters.status) return false;
       if (filters.role && acc.role !== filters.role) return false;
       if (filters.nationality && acc.nationality !== filters.nationality) return false;
+      if (filters.club && !acc.club?.toLowerCase().includes(filters.club.toLowerCase())) return false;
       return true;
     });
   }, [accreditations, filters]);
@@ -210,8 +246,13 @@ export default function Accreditations() {
     setEditModal({ open: true, accreditation });
     setLoadingCategories(true);
     try {
-      const eventCats = await EventCategoriesAPI.getByEventId(accreditation.eventId);
-      setEventCategories(eventCats);
+      if (categoriesCacheRef.current[accreditation.eventId]) {
+        setEventCategories(categoriesCacheRef.current[accreditation.eventId]);
+      } else {
+        const eventCats = await EventCategoriesAPI.getByEventId(accreditation.eventId);
+        categoriesCacheRef.current[accreditation.eventId] = eventCats;
+        setEventCategories(eventCats);
+      }
     } catch (err) {
       console.error("Failed to load event categories:", err);
       setEventCategories([]);
@@ -302,7 +343,7 @@ export default function Accreditations() {
   }, [deleteConfirmModal.accreditation, toast, refreshAccreditations]);
 
   const handleApprove = (accreditation) => {
-    setApproveData({ zoneCodes: [] });
+    setApproveData({ zoneCodes: [], sendEmail: true });
     setApproveModal({ open: true, accreditation });
   };
 
@@ -331,41 +372,44 @@ export default function Accreditations() {
       const zoneCodeString = approveData.zoneCodes.join(",");
       await AccreditationsAPI.approve(accreditation.id, zoneCodeString, badgeNumber);
       await refreshAccreditations();
-      // Generate PDF attachment for approved accreditation
-      const updatedAcc = { ...accreditation, badgeNumber, zoneCode: zoneCodeString, status: "approved" };
-      let pdfData = null;
-      try {
-        console.log("[Approve] Generating PDF for:", accreditation.email);
-        pdfData = await generatePdfAttachment(updatedAcc, eventData, zones);
-      } catch (pdfErr) {
-        console.warn("[Approve] PDF generation failed:", pdfErr);
-      }
-      // ALWAYS send email on approve / re-approve
-      let emailResult = { success: false };
-      try {
-        console.log("[Approve] Sending approval email to:", accreditation.email);
-        emailResult = await sendApprovalEmail({
-          to: accreditation.email,
-          name: `${accreditation.firstName} ${accreditation.lastName}`,
-          eventName: eventData?.name || "Event",
-          eventLocation: eventData?.location || "",
-          eventDates: eventData ? `${eventData.startDate} - ${eventData.endDate}` : "",
-          role: accreditation.role,
-          accreditationId: badgeNumber,
-          badgeNumber: badgeNumber,
-          zoneCode: zoneCodeString,
-          reportingTimes: eventData?.reportingTimes || "",
-          pdfBase64: pdfData?.pdfBase64 || null,
-          pdfFileName: pdfData?.pdfFileName || null
-        });
-      } catch (emailErr) {
-        console.error("[Approve] Email send error:", emailErr);
-      }
-      if (emailResult.success) {
-        toast.success(`Accreditation ${isReApproval ? "re-approved" : "approved"} and email with PDF sent!`);
+      if (approveData.sendEmail) {
+        // Generate PDF attachment for approved accreditation
+        const updatedAcc = { ...accreditation, badgeNumber, zoneCode: zoneCodeString, status: "approved" };
+        let pdfData = null;
+        try {
+          pdfData = await generatePdfAttachment(updatedAcc, eventData, zones);
+        } catch (pdfErr) {
+          console.warn("[Approve] PDF generation failed:", pdfErr);
+        }
+
+        let emailResult = { success: false };
+        try {
+          emailResult = await sendApprovalEmail({
+            to: accreditation.email,
+            name: `${accreditation.firstName} ${accreditation.lastName}`,
+            eventName: eventData?.name || "Event",
+            eventLocation: eventData?.location || "",
+            eventDates: eventData ? `${eventData.startDate} - ${eventData.endDate}` : "",
+            role: accreditation.role,
+            accreditationId: badgeNumber,
+            badgeNumber: badgeNumber,
+            zoneCode: zoneCodeString,
+            reportingTimes: eventData?.reportingTimes || "",
+            pdfBase64: pdfData?.pdfBase64 || null,
+            pdfFileName: pdfData?.pdfFileName || null
+          });
+        } catch (emailErr) {
+          console.error("[Approve] Email send error:", emailErr);
+        }
+
+        if (emailResult.success) {
+          toast.success(`Accreditation ${isReApproval ? "re-approved" : "approved"} and email with PDF sent!`);
+        } else {
+          console.warn("[Approve] Email failed:", emailResult.error);
+          toast.success(`Accreditation ${isReApproval ? "re-approved" : "approved"}! Email notification may have failed.`);
+        }
       } else {
-        console.warn("[Approve] Email failed:", emailResult.error);
-        toast.success(`Accreditation ${isReApproval ? "re-approved" : "approved"}! Email notification may have failed.`);
+        toast.success(`Accreditation ${isReApproval ? "re-approved" : "approved"}! (Email skipped)`);
       }
       setApproveModal({ open: false, accreditation: null });
     } catch (error) {
@@ -377,12 +421,12 @@ export default function Accreditations() {
   };
 
   const handleReject = (accreditation) => {
-    setRejectRemarks("");
+    setRejectData({ remarks: "", sendEmail: true });
     setRejectModal({ open: true, accreditation });
   };
 
   const confirmReject = async () => {
-    if (!rejectRemarks.trim()) {
+    if (!rejectData.remarks.trim()) {
       toast.error("Please provide rejection remarks");
       return;
     }
@@ -390,28 +434,32 @@ export default function Accreditations() {
     try {
       const accreditation = rejectModal.accreditation;
       const eventData = events.find((e) => e.id === accreditation.eventId);
-      await AccreditationsAPI.reject(accreditation.id, rejectRemarks);
+      await AccreditationsAPI.reject(accreditation.id, rejectData.remarks);
       await refreshAccreditations();
-      // ALWAYS send rejection email
-      let emailResult = { success: false };
-      try {
-        console.log("[Reject] Sending rejection email to:", accreditation.email);
-        emailResult = await sendRejectionEmail({
-          to: accreditation.email,
-          name: `${accreditation.firstName} ${accreditation.lastName}`,
-          eventName: eventData?.name || "Event",
-          role: accreditation.role,
-          remarks: rejectRemarks,
-          resubmitUrl: eventData?.slug ? `${window.location.origin}/register/${eventData.slug}` : null
-        });
-      } catch (emailErr) {
-        console.error("[Reject] Email send error:", emailErr);
-      }
-      if (emailResult.success) {
-        toast.success("Accreditation rejected and email sent!");
+
+      if (rejectData.sendEmail) {
+        let emailResult = { success: false };
+        try {
+          emailResult = await sendRejectionEmail({
+            to: accreditation.email,
+            name: `${accreditation.firstName} ${accreditation.lastName}`,
+            eventName: eventData?.name || "Event",
+            role: accreditation.role,
+            remarks: rejectData.remarks,
+            resubmitUrl: eventData?.slug ? `${window.location.origin}/register/${eventData.slug}` : null
+          });
+        } catch (emailErr) {
+          console.error("[Reject] Email send error:", emailErr);
+        }
+
+        if (emailResult.success) {
+          toast.success("Accreditation rejected and email sent!");
+        } else {
+          console.warn("[Reject] Email failed:", emailResult.error);
+          toast.success("Accreditation rejected! Email may have failed.");
+        }
       } else {
-        console.warn("[Reject] Email failed:", emailResult.error);
-        toast.success("Accreditation rejected! Email may have failed.");
+        toast.success("Accreditation rejected! (Email skipped)");
       }
       setRejectModal({ open: false, accreditation: null });
     } catch (error) {
@@ -427,7 +475,7 @@ export default function Accreditations() {
       toast.warning("No accreditations selected");
       return;
     }
-    setApproveData({ zoneCodes: [] });
+    setApproveData({ zoneCodes: [], sendEmail: true });
     setBulkApproveModal(true);
   };
 
@@ -441,50 +489,60 @@ export default function Accreditations() {
       const zoneCodeString = approveData.zoneCodes.join(",");
       await AccreditationsAPI.bulkApprove(selectedRows, zoneCodeString);
       await refreshAccreditations();
-      // Send approval emails for each approved accreditation
-      const updatedAccData = await AccreditationsAPI.getByEventId(selectedEvent);
-      let emailsSent = 0;
-      let emailsFailed = 0;
-      for (const rowId of selectedRows) {
-        const acc = updatedAccData.find((a) => a.id === rowId);
-        if (!acc || !acc.email) continue;
-        const eventData = events.find((e) => e.id === acc.eventId);
-        // Generate PDF attachment
-        let pdfData = null;
-        try {
-          pdfData = await generatePdfAttachment(acc, eventData, zones);
-        } catch (pdfErr) {
-          console.warn(`[BulkApprove] PDF failed for ${acc.email}:`, pdfErr);
+      if (approveData.sendEmail) {
+        const updatedAccData = await AccreditationsAPI.getByEventId(selectedEvent);
+        let emailsSent = 0;
+        let emailsFailed = 0;
+        
+        const CHUNK_SIZE = 5;
+        for (let i = 0; i < selectedRows.length; i += CHUNK_SIZE) {
+          const chunkIds = selectedRows.slice(i, i + CHUNK_SIZE);
+          await Promise.all(chunkIds.map(async (rowId) => {
+            const acc = updatedAccData.find((a) => a.id === rowId);
+            if (!acc || !acc.email) return;
+            const eventData = events.find((e) => e.id === acc.eventId);
+            
+            let pdfData = null;
+            try {
+              pdfData = await generatePdfAttachment(acc, eventData, zones);
+            } catch (pdfErr) {
+              console.warn(`[BulkApprove] PDF failed for ${acc.email}:`, pdfErr);
+            }
+
+            try {
+              const emailResult = await sendApprovalEmail({
+                to: acc.email,
+                name: `${acc.firstName} ${acc.lastName}`,
+                eventName: eventData?.name || "Event",
+                eventLocation: eventData?.location || "",
+                eventDates: eventData ? `${eventData.startDate} - ${eventData.endDate}` : "",
+                role: acc.role,
+                accreditationId: acc.badgeNumber || acc.accreditationId,
+                badgeNumber: acc.badgeNumber || "",
+                zoneCode: acc.zoneCode || zoneCodeString,
+                reportingTimes: eventData?.reportingTimes || "",
+                pdfBase64: pdfData?.pdfBase64 || null,
+                pdfFileName: pdfData?.pdfFileName || null
+              });
+              if (emailResult.success) {
+                emailsSent++;
+              } else {
+                emailsFailed++;
+              }
+            } catch (emailErr) {
+              console.error(`[BulkApprove] Email failed for ${acc.email}:`, emailErr);
+              emailsFailed++;
+            }
+          }));
         }
-        try {
-          const emailResult = await sendApprovalEmail({
-            to: acc.email,
-            name: `${acc.firstName} ${acc.lastName}`,
-            eventName: eventData?.name || "Event",
-            eventLocation: eventData?.location || "",
-            eventDates: eventData ? `${eventData.startDate} - ${eventData.endDate}` : "",
-            role: acc.role,
-            accreditationId: acc.badgeNumber || acc.accreditationId,
-            badgeNumber: acc.badgeNumber || "",
-            zoneCode: acc.zoneCode || zoneCodeString,
-            reportingTimes: eventData?.reportingTimes || "",
-            pdfBase64: pdfData?.pdfBase64 || null,
-            pdfFileName: pdfData?.pdfFileName || null
-          });
-          if (emailResult.success) {
-            emailsSent++;
-          } else {
-            emailsFailed++;
-          }
-        } catch (emailErr) {
-          console.error(`[BulkApprove] Email failed for ${acc.email}:`, emailErr);
-          emailsFailed++;
+
+        if (emailsFailed === 0) {
+          toast.success(`${selectedRows.length} approved and ${emailsSent} emails sent!`);
+        } else {
+          toast.success(`${selectedRows.length} approved. Emails: ${emailsSent} sent, ${emailsFailed} failed.`);
         }
-      }
-      if (emailsFailed === 0) {
-        toast.success(`${selectedRows.length} approved and ${emailsSent} emails sent!`);
       } else {
-        toast.success(`${selectedRows.length} approved. Emails: ${emailsSent} sent, ${emailsFailed} failed.`);
+        toast.success(`${selectedRows.length} approved! (Emails skipped)`);
       }
       setBulkApproveModal(false);
       setSelectedRows([]);
@@ -496,12 +554,15 @@ export default function Accreditations() {
     }
   };
 
-  const handleBulkEdit = async (ids, updates) => {
-    if (!ids || ids.length === 0) return;
+  const handleBulkEdit = async () => {
+    if (!selectedRows || selectedRows.length === 0) return;
     setBulkEditing(true);
     try {
-      await AccreditationsAPI.bulkUpdate(ids, updates);
-      toast.success(`${ids.length} accreditations updated successfully`);
+      const updates = { [bulkEditField]: bulkEditValue };
+      await AccreditationsAPI.bulkUpdate(selectedRows, updates);
+      toast.success(`${selectedRows.length} accreditations updated successfully`);
+      setShowBulkEditModal(false);
+      setBulkEditValue("");
       setSelectedRows([]);
       await refreshAccreditations();
     } catch (error) {
@@ -548,7 +609,8 @@ export default function Accreditations() {
     if (downloadingId === id) return;
     setDownloadingId(id);
     try {
-      const baseFileName = `${accreditation.firstName}_${accreditation.lastName}_${selectedImageSize}_${accreditation.accreditationId || "card"}`;
+      const clubStr = accreditation.club ? `${accreditation.club.replace(/\s+/g, '_')}_` : "";
+      const baseFileName = `${clubStr}${accreditation.firstName}_${accreditation.lastName}_${selectedImageSize}_${accreditation.accreditationId || "card"}`;
       await downloadAsImages("accreditation-front-card", "accreditation-back-card", baseFileName, selectedImageSize);
       toast.success("Images downloaded! Check your Downloads folder.");
     } catch (err) {
@@ -601,79 +663,111 @@ export default function Accreditations() {
   const columns = [
     {
       key: "name",
-      header: "Name",
+      header: "Participant",
       sortable: true,
       render: (row) => (
-        <div className="flex items-center gap-3">
-          {row.photoUrl ? (
-            <img
-              src={row.photoUrl}
-              alt=""
-              className="w-10 h-10 rounded-full object-cover border-2 border-primary-500/30"
-            />
-          ) : (
-            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary-600 to-ocean-600 flex items-center justify-center">
-              <span className="text-lg font-medium text-white">
-                {row.firstName?.[0]}{row.lastName?.[0]}
-              </span>
+        <div className="flex items-center gap-4">
+          <div className="relative group w-12 h-12 flex-shrink-0">
+            {row.photoUrl ? (
+              <img
+                src={row.photoUrl}
+                alt=""
+                className="w-full h-full rounded-2xl object-cover border border-white/10 group-hover:border-primary-500/50 transition-all duration-300 shadow-lg"
+              />
+            ) : (
+              <div className="w-full h-full rounded-2xl bg-white/5 border border-white/10 group-hover:bg-primary-500/10 group-hover:border-primary-500/20 flex items-center justify-center transition-all duration-300">
+                <span className="text-sm font-black text-primary-400 group-hover:scale-110 transition-transform">
+                  {row.firstName?.[0]}{row.lastName?.[0]}
+                </span>
+              </div>
+            )}
+            <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-slate-900 border-2 border-slate-900 flex items-center justify-center">
+              <div className={cn("w-1.5 h-1.5 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]", 
+                row.status === 'approved' ? 'bg-emerald-500' : 
+                row.status === 'pending' ? 'bg-amber-500' : 'bg-red-500')} 
+              />
             </div>
-          )}
-          <div>
-            <p className="font-medium text-white">
+          </div>
+          <div className="flex flex-col">
+            <p className="font-black text-white group-hover:text-primary-400 transition-colors uppercase tracking-tight">
               {row.firstName} {row.lastName}
             </p>
-            <p className="text-lg text-slate-500">{row.email}</p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{row.email}</span>
+            </div>
           </div>
         </div>
       )
     },
     {
       key: "role",
-      header: "Role",
+      header: "Function",
       sortable: true,
       render: (row) => (
-        <Badge className={getRoleColor(row.role)}>{row.role}</Badge>
+        <Badge variant={getRoleColor(row.role)}>
+          {row.role}
+        </Badge>
       )
     },
-    { key: "club", header: "Club", sortable: true },
+    { 
+      key: "club", 
+      header: "Organization", 
+      sortable: true,
+      render: (row) => (
+        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+          {row.club || "Independant"}
+        </span>
+      )
+    },
     {
       key: "nationality",
-      header: "Country",
+      header: "Region",
       sortable: true,
-      render: (row) => <span className="text-lg">{row.nationality}</span>
+      render: (row) => (
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-black text-slate-300 uppercase italic tracking-tighter">{row.nationality}</span>
+        </div>
+      )
     },
     {
       key: "status",
-      header: "Status",
+      header: "Security Status",
       sortable: true,
       render: (row) => (
-        <Badge className={getStatusColor(row.status)}>{row.status}</Badge>
+        <div className="flex items-center gap-2">
+          {row.status === 'approved' && <CheckCircle className="w-3 h-3 text-emerald-500" />}
+          {row.status === 'pending' && <Clock className="w-3 h-3 text-amber-500" />}
+          {row.status === 'rejected' && <XCircle className="w-3 h-3 text-red-500" />}
+          <Badge variant={getStatusColor(row.status)}>{row.status}</Badge>
+        </div>
       )
     },
     {
       key: "expiresAt",
-      header: "Expiration",
+      header: "Validity",
       sortable: true,
       render: (row) => {
         if (row.status !== "approved") {
-          return <span className="text-lg text-slate-500">—</span>;
+          return <span className="text-slate-700 font-black tracking-widest text-[10px]">VAIDATION REQ.</span>;
         }
         const expired = isExpired(row.expiresAt);
         const label = getExpirationLabel(row.expiresAt);
         const colorClass = getExpirationStatusColor(row.expiresAt);
         return (
-          <Badge className={colorClass}>
-            {expired ? "EXPIRED" : label}
+          <Badge variant={colorClass}>
+            {expired ? "VOID" : label}
           </Badge>
         );
       }
     },
     {
       key: "createdAt",
-      header: "Submitted",
+      header: "Timestamp",
       sortable: true,
       render: (row) => (
-        <span className="text-lg text-slate-400">{formatDate(row.createdAt)}</span>
+        <div className="flex flex-col">
+          <span className="text-xs font-black text-slate-500 tracking-tighter uppercase">{formatDate(row.createdAt)}</span>
+        </div>
       )
     },
     {
@@ -766,14 +860,13 @@ export default function Accreditations() {
       {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white">Accreditations</h1>
+          <h1 className="text-3xl font-bold text-white font-serif">Accreditations</h1>
           <p className="text-lg text-slate-400 mt-1 font-extralight">Manage participant accreditations</p>
         </div>
         <Button variant="primary" icon={Plus}>
           Add Accreditation
         </Button>
       </div>
-
       <Card>
         <CardContent className="space-y-4">
           {/* Filters */}
@@ -787,40 +880,69 @@ export default function Accreditations() {
                 placeholder="Select an event"
               />
             </div>
-            <div className="flex gap-4">
-              <Select
-                label="Status"
-                value={filters.status}
-                onChange={(e) => setFilters((prev) => ({ ...prev, status: e.target.value }))}
-                options={[
-                  { value: "pending", label: "Pending" },
-                  { value: "approved", label: "Approved" },
-                  { value: "rejected", label: "Rejected" }
-                ]}
-                placeholder="All Status"
-              />
-              <Select
-                label="Role"
-                value={filters.role}
-                onChange={(e) => setFilters((prev) => ({ ...prev, role: e.target.value }))}
-                options={
-                  eventCategories && eventCategories.length > 0
-                    ? eventCategories.map((cat) => {
-                        const categoryData = cat.category || cat;
-                        const name = categoryData?.name || cat?.name;
-                        return name ? { value: name, label: name } : null;
-                      }).filter(Boolean)
-                    : ROLES.map((r) => ({ value: r, label: r }))
-                }
-                placeholder="All Roles"
-              />
-              <Select
-                label="Country"
-                value={filters.nationality}
-                onChange={(e) => setFilters((prev) => ({ ...prev, nationality: e.target.value }))}
-                options={COUNTRIES.map((c) => ({ value: c.code, label: c.name }))}
-                placeholder="All Countries"
-              />
+            <div className="flex flex-wrap items-end gap-4">
+              <div className="min-w-[150px]">
+                <Select
+                  label="Status"
+                  value={filters.status}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, status: e.target.value }))}
+                  options={[
+                    { value: "pending", label: "Pending" },
+                    { value: "approved", label: "Approved" },
+                    { value: "rejected", label: "Rejected" }
+                  ]}
+                  placeholder="All Status"
+                />
+              </div>
+              <div className="min-w-[180px]">
+                <Select
+                  label="Role"
+                  value={filters.role}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, role: e.target.value }))}
+                  options={
+                    eventCategories && eventCategories.length > 0
+                      ? eventCategories.map((cat) => {
+                          const categoryData = cat.category || cat;
+                          const name = categoryData?.name || cat?.name;
+                          return name ? { value: name, label: name } : null;
+                        }).filter(Boolean)
+                      : ROLES.map((r) => ({ value: r, label: r }))
+                  }
+                  placeholder="All Roles"
+                />
+              </div>
+              <div className="w-[250px]">
+                <SearchableSelect
+                  label="Club"
+                  value={filters.club}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, club: e.target.value }))}
+                  options={[
+                    ...new Set([
+                      ...(clubs?.map(c => typeof c === 'string' ? c : (c?.full || c?.short)).filter(Boolean) || []),
+                      ...(accreditations?.map(a => a.club).filter(Boolean) || [])
+                    ])
+                  ].sort((a,b) => a.localeCompare(b)).map(club => ({ value: club, label: club }))}
+                  placeholder="Select/Search club..."
+                />
+              </div>
+              <div className="min-w-[150px]">
+                <Select
+                  label="Country"
+                  value={filters.nationality}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, nationality: e.target.value }))}
+                  options={COUNTRIES.map((c) => ({ value: c.code, label: c.name }))}
+                  placeholder="All Countries"
+                />
+              </div>
+              <Button
+                variant="ghost"
+                icon={XCircle}
+                onClick={resetFilters}
+                className="h-[46px] text-slate-400 hover:text-red-400 border-slate-700 hover:border-red-500/30"
+                title="Clear All Filters"
+              >
+                Clear
+              </Button>
             </div>
           </div>
 
@@ -829,16 +951,29 @@ export default function Accreditations() {
             filteredData={filteredAccreditations}
             event={currentEvent}
             zones={zones}
+            clubs={clubs}
             eventCategories={eventCategories}
             onClearSelection={setSelectedRows}
-            onBulkEdit={handleBulkEdit}
+            onOpenBulkEdit={() => setShowBulkEditModal(true)}
             onBulkApprove={handleBulkApprove}
           />
 
           {loading ? (
-            <div className="flex flex-col items-center justify-center py-16">
-              <Loader2 className="w-12 h-12 text-primary-500 animate-spin mb-4" />
-              <p className="text-lg text-slate-400">Loading accreditations...</p>
+            <div className="space-y-4">
+              <div className="flex items-center gap-4 mb-6">
+                <Skeleton className="h-10 w-64" />
+                <Skeleton className="h-10 w-32 ml-auto" />
+              </div>
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="flex gap-4 p-4 glass-panel rounded-2xl">
+                  <Skeleton variant="circle" className="w-12 h-12" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-4 w-1/4" />
+                    <Skeleton className="h-3 w-1/2" />
+                  </div>
+                  <Skeleton className="h-8 w-24" />
+                </div>
+              ))}
             </div>
           ) : !selectedEvent ? (
             <EmptyState
@@ -874,6 +1009,7 @@ export default function Accreditations() {
         accreditation={editModal.accreditation}
         zones={zones}
         eventCategories={eventCategories}
+        clubs={clubs}
         saving={editSaving}
         currentEvent={currentEvent}
         onSave={(data) => {
@@ -938,11 +1074,11 @@ export default function Accreditations() {
                 <img
                   src={viewModal.accreditation.photoUrl}
                   alt=""
-                  className="w-32 h-40 rounded-lg object-cover border-2 border-primary-500/30"
+                  className="w-32 h-32 rounded-2xl object-cover border-2 border-primary-500/30 shadow-xl"
                 />
               ) : (
-                <div className="w-32 h-40 rounded-lg bg-gradient-to-br from-primary-600 to-ocean-600 flex items-center justify-center">
-                  <span className="text-3xl font-bold text-white">
+                <div className="w-32 h-32 rounded-2xl bg-gradient-to-br from-primary-600 to-ocean-600 flex items-center justify-center shadow-xl">
+                  <span className="text-4xl font-black text-white">
                     {viewModal.accreditation.firstName?.[0]}
                     {viewModal.accreditation.lastName?.[0]}
                   </span>
@@ -953,10 +1089,10 @@ export default function Accreditations() {
                   {viewModal.accreditation.firstName} {viewModal.accreditation.lastName}
                 </h3>
                 <div className="flex items-center gap-2 mt-2">
-                  <Badge className={getRoleColor(viewModal.accreditation.role)}>
+                  <Badge variant={getRoleColor(viewModal.accreditation.role)}>
                     {viewModal.accreditation.role}
                   </Badge>
-                  <Badge className={getStatusColor(viewModal.accreditation.status)}>
+                  <Badge variant={getStatusColor(viewModal.accreditation.status)}>
                     {viewModal.accreditation.status}
                   </Badge>
                 </div>
@@ -1213,6 +1349,22 @@ export default function Accreditations() {
             <p className="text-lg text-slate-500">
               {approveData.zoneCodes?.length || 0} zone(s) selected
             </p>
+
+            {/* Email Notification Toggle */}
+            <div className="pt-2">
+              <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg bg-slate-800/50 border border-slate-700 hover:bg-slate-800 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={approveData.sendEmail}
+                  onChange={(e) => setApproveData((prev) => ({ ...prev, sendEmail: e.target.checked }))}
+                  className="w-5 h-5 rounded border-slate-600 bg-slate-700 text-primary-500 focus:ring-primary-500/40"
+                />
+                <div>
+                  <p className="text-lg font-medium text-white">Send Email Notification</p>
+                  <p className="text-sm text-slate-400">Send approval email with PDF attachment to the athlete/coach</p>
+                </div>
+              </label>
+            </div>
           </div>
           <div className="flex gap-3 pt-4">
             <Button
@@ -1254,12 +1406,28 @@ export default function Accreditations() {
               Rejection Remarks <span className="text-red-400">*</span>
             </label>
             <textarea
-              value={rejectRemarks}
-              onChange={(e) => setRejectRemarks(e.target.value)}
+              value={rejectData.remarks}
+              onChange={(e) => setRejectData((prev) => ({ ...prev, remarks: e.target.value }))}
               rows={4}
               className="w-full px-4 py-2.5 bg-slate-800/50 border border-primary-800/30 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 text-lg"
               placeholder="Provide a reason for rejection..."
             />
+          </div>
+
+          {/* Email Notification Toggle */}
+          <div className="pt-2">
+            <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg bg-slate-800/50 border border-slate-700 hover:bg-slate-800 transition-colors">
+              <input
+                type="checkbox"
+                checked={rejectData.sendEmail}
+                onChange={(e) => setRejectData((prev) => ({ ...prev, sendEmail: e.target.checked }))}
+                className="w-5 h-5 rounded border-slate-600 bg-slate-700 text-primary-500 focus:ring-primary-500/40"
+              />
+              <div>
+                <p className="text-lg font-medium text-white">Send Email Notification</p>
+                <p className="text-sm text-slate-400">Inform the athlete/coach about the rejection via email</p>
+              </div>
+            </label>
           </div>
           <div className="flex gap-3 pt-4">
             <Button
@@ -1368,6 +1536,22 @@ export default function Accreditations() {
             <p className="text-lg text-slate-500">
               {approveData.zoneCodes?.length || 0} zone(s) selected
             </p>
+
+            {/* Email Notification Toggle */}
+            <div className="pt-2">
+              <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg bg-slate-800/50 border border-slate-700 hover:bg-slate-800 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={approveData.sendEmail}
+                  onChange={(e) => setApproveData((prev) => ({ ...prev, sendEmail: e.target.checked }))}
+                  className="w-5 h-5 rounded border-slate-600 bg-slate-700 text-primary-500 focus:ring-primary-500/40"
+                />
+                <div>
+                  <p className="text-lg font-medium text-white">Send Email Notifications</p>
+                  <p className="text-sm text-slate-400">Send approval emails with PDFs to all selected applicants</p>
+                </div>
+              </label>
+            </div>
           </div>
           <div className="flex gap-3 pt-4">
             <Button variant="secondary" onClick={() => setBulkApproveModal(false)} className="flex-1">
@@ -1620,15 +1804,138 @@ export default function Accreditations() {
         </div>
       </Modal>
 
-      {/* Compose Email Modal (single) */}
-      <ComposeEmailModal
-        isOpen={emailModal.open}
-        onClose={() => setEmailModal({ open: false, accreditation: null })}
-        recipients={emailModal.accreditation ? [emailModal.accreditation] : []}
-        event={currentEvent}
-        zones={zones}
-        isBulk={false}
-      />
+      {/* Bulk Edit Modal */}
+      <Modal 
+        isOpen={showBulkEditModal} 
+        onClose={() => setShowBulkEditModal(false)} 
+        title="Bulk Edit Accreditations"
+      >
+        <div className="p-6 space-y-4">
+          <p className="text-lg text-slate-300">
+            Edit <span className="font-semibold text-white">{selectedRows.length}</span> selected accreditations
+          </p>
+
+          <div className="space-y-4 py-2">
+            <div>
+              <label className="block text-lg font-medium text-slate-300 mb-2">
+                Field to Edit
+              </label>
+              <Select
+                value={bulkEditField}
+                onChange={(e) => {
+                  setBulkEditField(e.target.value);
+                  setBulkEditValue("");
+                }}
+                options={[
+                  { value: "status", label: "Security Status" },
+                  { value: "role", label: "Function/Role" },
+                  { value: "category", label: "Special Privilege" },
+                  { value: "club", label: "Organization" },
+                  { value: "gender", label: "Gender" },
+                  { value: "nationality", label: "Region/Country" },
+                  { value: "zoneCode", label: "Zone Access" },
+                ]}
+              />
+            </div>
+
+            <div>
+              <label className="block text-lg font-medium text-slate-300 mb-2">
+                New Value
+              </label>
+              {bulkEditField === "status" ? (
+                <Select
+                  value={bulkEditValue}
+                  onChange={(e) => setBulkEditValue(e.target.value)}
+                  options={[
+                    { value: "pending", label: "Pending" },
+                    { value: "approved", label: "Approved" },
+                    { value: "rejected", label: "Rejected" },
+                  ]}
+                  placeholder="Select new status..."
+                />
+              ) : bulkEditField === "club" ? (
+                <SearchableSelect
+                  value={bulkEditValue}
+                  onChange={(e) => setBulkEditValue(e.target.value)}
+                  options={[
+                    ...new Set([
+                      ...(clubs?.map(c => typeof c === 'string' ? c : (c?.full || c?.short)).filter(Boolean) || []),
+                      ...(accreditations?.map(a => a.club).filter(Boolean) || [])
+                    ])
+                  ].sort().map(club => ({ value: club, label: club }))}
+                  placeholder="Select or Search organization..."
+                />
+              ) : bulkEditField === "role" || bulkEditField === "category" ? (
+                <Select
+                  value={bulkEditValue}
+                  onChange={(e) => setBulkEditValue(e.target.value)}
+                  options={
+                    eventCategories && eventCategories.length > 0
+                      ? eventCategories.map((cat) => {
+                          const categoryData = cat.category || cat;
+                          const name = categoryData?.name || cat?.name;
+                          return name ? { value: name, label: name } : null;
+                        }).filter(Boolean)
+                      : ROLES.map((r) => ({ value: r, label: r }))
+                  }
+                  placeholder={`Select new ${bulkEditField}...`}
+                />
+              ) : bulkEditField === "gender" ? (
+                <Select
+                  value={bulkEditValue}
+                  onChange={(e) => setBulkEditValue(e.target.value)}
+                  options={[
+                    { value: "Male", label: "Male" },
+                    { value: "Female", label: "Female" },
+                  ]}
+                  placeholder="Select gender..."
+                />
+              ) : bulkEditField === "nationality" ? (
+                <Select
+                  value={bulkEditValue}
+                  onChange={(e) => setBulkEditValue(e.target.value)}
+                  options={COUNTRIES.map((c) => ({ value: c.code, label: c.name }))}
+                  placeholder="Select country/region..."
+                />
+              ) : bulkEditField === "zoneCode" ? (
+                <Select
+                  value={bulkEditValue}
+                  onChange={(e) => setBulkEditValue(e.target.value)}
+                  options={zones.map(z => ({ value: z.code, label: `${z.code} - ${z.name}` }))}
+                  placeholder="Select zone access..."
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={bulkEditValue}
+                  onChange={(e) => setBulkEditValue(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+                  placeholder="Enter new value..."
+                />
+              )}
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-6">
+            <Button
+              variant="secondary"
+              onClick={() => setShowBulkEditModal(false)}
+              className="flex-1"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleBulkEdit}
+              className="flex-1 shadow-lg shadow-primary-500/20"
+              loading={bulkEditing}
+              disabled={bulkEditing || !bulkEditValue}
+            >
+              Apply to {selectedRows.length} Records
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

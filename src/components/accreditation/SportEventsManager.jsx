@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from "react";
 import {
   Upload, FileSpreadsheet, CheckCircle, AlertTriangle,
-  RefreshCw, Trash2, Eye, Loader2, FileText, Edit3
+  RefreshCw, Trash2, Eye, Loader2, FileText, Edit3, X, Save, Download
 } from "lucide-react";
 import { SportEventsAPI, MeetProgrammesAPI } from "../../lib/broadcastApi";
 import { parseExcelEvents } from "../../lib/excelParser";
+import * as XLSX from "xlsx";
 import { extractTextFromPdf, parsePdfEventsFromText } from "../../lib/pdfParser";
 import { supabase } from "../../lib/supabase";
 
@@ -18,6 +19,10 @@ export default function SportEventsManager({ eventId, onToast }) {
   const [pendingEvents, setPendingEvents] = useState([]);
   const [committing, setCommitting] = useState(false);
   const [editingEvent, setEditingEvent] = useState(null);
+
+  // For inline editing committed events
+  const [inlineEditing, setInlineEditing] = useState(null);
+  const [editForm, setEditForm] = useState({});
 
   useEffect(() => {
     if (eventId) loadAll();
@@ -150,6 +155,60 @@ export default function SportEventsManager({ eventId, onToast }) {
     onToast?.("Events cleared", "success");
   };
 
+  const handleDownloadTemplate = (format = 'csv') => {
+    const headers = ["EventCode", "EventName", "Gender", "AgeMin", "AgeMax", "Session", "Date", "StartTime", "Venue"];
+    const demoRow1 = ["EVT-01", "100m Freestyle", "Male", "14", "99", "1", "2026-05-10", "09:00", "Main Pool"];
+    const demoRow2 = ["EVT-02", "100m Freestyle", "Female", "14", "99", "1", "2026-05-10", "09:15", "Main Pool"];
+    
+    if (format === 'csv') {
+      const csvContent = [
+        headers.join(","),
+        demoRow1.join(","),
+        demoRow2.join(",")
+      ].join("\n");
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      link.setAttribute("href", url);
+      link.setAttribute("download", "Sport_Events_Template.csv");
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } else if (format === 'excel') {
+      const ws = XLSX.utils.aoa_to_sheet([headers, demoRow1, demoRow2]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Template");
+      XLSX.writeFile(wb, "Sport_Events_Template.xlsx");
+    }
+  };
+
+  const startInlineEdit = (ev) => {
+    setInlineEditing(ev.id);
+    setEditForm({ ...ev });
+  };
+
+  const cancelInlineEdit = () => {
+    setInlineEditing(null);
+    setEditForm({});
+  };
+
+  const saveInlineEdit = async () => {
+    try {
+      await SportEventsAPI.bulkUpsert(eventId, [editForm]);
+      setInlineEditing(null);
+      await loadAll();
+      onToast?.("Event updated successfully", "success");
+    } catch (err) {
+      onToast?.("Failed to update event: " + err.message, "error");
+    }
+  };
+
+  const handleEditFormChange = (e, field) => {
+    setEditForm(prev => ({ ...prev, [field]: e.target.value }));
+  };
+
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-gray-400 font-extralight text-lg py-4">
@@ -162,22 +221,46 @@ export default function SportEventsManager({ eventId, onToast }) {
     <div id="sport-events-manager" className="space-y-6">
       {/* Upload actions */}
       <div className="grid grid-cols-2 gap-4">
-        <label className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg py-6 cursor-pointer transition-colors ${uploading ? "opacity-50 cursor-not-allowed border-gray-700" : "border-gray-600 hover:border-blue-500"}`}>
-          <FileSpreadsheet className="w-7 h-7 text-blue-400 mb-2" />
-          <span className="text-white font-extralight text-lg">
-            {uploading ? uploadProgress || "Working..." : "Upload Excel"}
-          </span>
-          <span className="text-gray-500 font-extralight text-lg mt-1 text-center px-2">
-            EventCode, EventName, Gender, AgeMin, AgeMax, Session, Date, StartTime, Venue
-          </span>
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            className="hidden"
-            onChange={handleExcelUpload}
-            disabled={uploading}
-          />
-        </label>
+        <div className={`relative flex flex-col items-center justify-center border-2 border-dashed rounded-lg py-6 transition-colors ${uploading ? "opacity-50 border-gray-700" : "border-gray-600 focus-within:border-blue-500"}`}>
+          <label className={`absolute inset-0 z-10 w-full h-full cursor-pointer ${uploading ? "cursor-not-allowed text-transparent" : "text-transparent"}`}>
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+              onChange={handleExcelUpload}
+              disabled={uploading}
+            />
+          </label>
+          <div className="relative z-0 flex flex-col items-center pointer-events-none">
+            <FileSpreadsheet className="w-7 h-7 text-blue-400 mb-2 pointer-events-auto" />
+            <span className="text-white font-extralight text-lg pointer-events-auto cursor-pointer">
+              {uploading ? uploadProgress || "Working..." : "Upload Excel"}
+            </span>
+            <span className="text-gray-500 font-extralight text-lg mt-1 text-center px-2 pointer-events-auto">
+              EventCode, EventName, Gender, AgeMin, AgeMax, Session, Date, StartTime, Venue
+            </span>
+          </div>
+          <div className="absolute top-2 right-2 z-20 flex gap-2">
+            <button
+              type="button"
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDownloadTemplate('csv'); }}
+              className="flex items-center gap-1 bg-gray-800 hover:bg-gray-700 text-blue-400 px-2 py-1 rounded text-sm transition-colors border border-gray-700"
+              disabled={uploading}
+              title="Download CSV Template"
+            >
+              <Download className="w-4 h-4" /> CSV
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDownloadTemplate('excel'); }}
+              className="flex items-center gap-1 bg-gray-800 hover:bg-gray-700 text-green-400 px-2 py-1 rounded text-sm transition-colors border border-gray-700"
+              disabled={uploading}
+              title="Download Excel Template"
+            >
+              <Download className="w-4 h-4" /> Excel
+            </button>
+          </div>
+        </div>
 
         <label className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg py-6 cursor-pointer transition-colors ${uploading ? "opacity-50 cursor-not-allowed border-gray-700" : "border-gray-600 hover:border-purple-500"}`}>
           {uploading ? (
@@ -338,7 +421,7 @@ export default function SportEventsManager({ eventId, onToast }) {
             <table className="w-full text-lg font-extralight">
               <thead className="bg-gray-900">
                 <tr>
-                  {["Code", "Event", "Gender", "Age", "Session", "Date", "Time", "Venue"].map((h) => (
+                  {["Code", "Event", "Gender", "Age (Min-Max)", "Session", "Date", "Time", "Venue", "Actions"].map((h) => (
                     <th key={h} className="px-4 py-2 text-left text-gray-400 font-extralight">{h}</th>
                   ))}
                 </tr>
@@ -346,16 +429,68 @@ export default function SportEventsManager({ eventId, onToast }) {
               <tbody>
                 {events.map((ev, i) => (
                   <tr key={ev.id || i} className="border-t border-gray-700 hover:bg-gray-700/30">
-                    <td className="px-4 py-2 text-blue-300">{ev.eventCode}</td>
-                    <td className="px-4 py-2 text-white">{ev.eventName}</td>
-                    <td className="px-4 py-2 text-gray-300">{ev.gender || "-"}</td>
-                    <td className="px-4 py-2 text-gray-300">
-                      {ev.ageMin || ev.ageMax ? `${ev.ageMin || 0}–${ev.ageMax || "∞"}` : "-"}
-                    </td>
-                    <td className="px-4 py-2 text-gray-300">{ev.session || "-"}</td>
-                    <td className="px-4 py-2 text-gray-300">{ev.date || "-"}</td>
-                    <td className="px-4 py-2 text-gray-300">{ev.startTime || "-"}</td>
-                    <td className="px-4 py-2 text-gray-300">{ev.venue || "-"}</td>
+                    {inlineEditing === ev.id ? (
+                      <>
+                        <td className="px-2 py-2">
+                          <input className="w-20 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white" value={editForm.eventCode || ''} onChange={(e) => handleEditFormChange(e, 'eventCode')} />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white" value={editForm.eventName || ''} onChange={(e) => handleEditFormChange(e, 'eventName')} />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input className="w-16 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white" value={editForm.gender || ''} onChange={(e) => handleEditFormChange(e, 'gender')} />
+                        </td>
+                        <td className="px-2 py-2 flex items-center gap-1 mt-1">
+                          <input className="w-12 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white" placeholder="Min" value={editForm.ageMin || ''} onChange={(e) => handleEditFormChange(e, 'ageMin')} />
+                          <span className="text-gray-500">-</span>
+                          <input className="w-12 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white" placeholder="Max" value={editForm.ageMax || ''} onChange={(e) => handleEditFormChange(e, 'ageMax')} />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input className="w-12 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white" value={editForm.session || ''} onChange={(e) => handleEditFormChange(e, 'session')} />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input type="date" className="w-32 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white" value={editForm.date || ''} onChange={(e) => handleEditFormChange(e, 'date')} />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input type="time" className="w-24 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white" value={editForm.startTime || ''} onChange={(e) => handleEditFormChange(e, 'startTime')} />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input className="w-24 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white" value={editForm.venue || ''} onChange={(e) => handleEditFormChange(e, 'venue')} />
+                        </td>
+                        <td className="px-2 py-2">
+                          <div className="flex gap-2">
+                            <button onClick={saveInlineEdit} className="text-green-400 hover:text-green-300" title="Save">
+                              <Save className="w-4 h-4" />
+                            </button>
+                            <button onClick={cancelInlineEdit} className="text-gray-400 hover:text-gray-300" title="Cancel">
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-4 py-2 text-blue-300">{ev.eventCode}</td>
+                        <td className="px-4 py-2 text-white">{ev.eventName}</td>
+                        <td className="px-4 py-2 text-gray-300">{ev.gender || "-"}</td>
+                        <td className="px-4 py-2 text-gray-300">
+                          {ev.ageMin || ev.ageMax ? `${ev.ageMin || 0}–${ev.ageMax || "∞"}` : "-"}
+                        </td>
+                        <td className="px-4 py-2 text-gray-300">{ev.session || "-"}</td>
+                        <td className="px-4 py-2 text-gray-300">{ev.date || "-"}</td>
+                        <td className="px-4 py-2 text-gray-300">{ev.startTime || "-"}</td>
+                        <td className="px-4 py-2 text-gray-300">{ev.venue || "-"}</td>
+                        <td className="px-4 py-2">
+                          <button
+                            onClick={() => startInlineEdit(ev)}
+                            className="p-1 text-blue-400 hover:text-blue-300 bg-gray-800 rounded border border-gray-700 hover:border-blue-500/50 transition-colors"
+                            title="Edit Event"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </>
+                    )}
                   </tr>
                 ))}
               </tbody>

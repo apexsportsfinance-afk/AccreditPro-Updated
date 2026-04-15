@@ -24,6 +24,7 @@ export default function Settings() {
     newPassword: "",
     confirmPassword: ""
   });
+  const [activeTab, setActiveTab] = useState("smtp");
 
   const [showPassword, setShowPassword] = useState(false);
   const [testingEmail, setTestingEmail] = useState(false);
@@ -304,7 +305,38 @@ export default function Settings() {
         </p>
       </div>
 
-      <Card>
+      <div className="flex flex-col md:flex-row gap-6">
+        {/* Settings Navigation Sidebar */}
+        <div className="w-full md:w-64 lg:w-72 flex-shrink-0">
+          <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-2 sticky top-6">
+            {[
+              { id: "smtp", label: "SMTP Email Config", icon: Mail, color: "violet" },
+              { id: "templates", label: "Email Templates", icon: FileText, color: "emerald" },
+              { id: "profile", label: "Profile Setting", icon: Shield, color: "primary" },
+              { id: "system", label: "System Information", icon: Info, color: "cyan" },
+              { id: "notifications", label: "Notifications Settings", icon: Bell, color: "amber" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl text-lg font-medium transition-all mb-1 last:mb-0 ${
+                  activeTab === tab.id
+                    ? `bg-${tab.color}-500/10 text-${tab.color}-400 border border-${tab.color}-500/20`
+                    : "text-slate-400 hover:text-white hover:bg-slate-800/50 border border-transparent"
+                }`}
+              >
+                <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? `text-${tab.color}-400` : "text-slate-500"}`} />
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Settings Content Area */}
+        <div className="flex-1 space-y-6">
+          {activeTab === "smtp" && (
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+              <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -446,9 +478,13 @@ export default function Settings() {
             </div>
           </div>
         </CardContent>
-      </Card>
+              </Card>
+            </motion.div>
+          )}
 
-      <Card>
+          {activeTab === "templates" && (
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+              <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -578,10 +614,13 @@ export default function Settings() {
             )}
           </div>
         </CardContent>
-      </Card>
+              </Card>
+            </motion.div>
+          )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
+          {activeTab === "profile" && (
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+              <Card>
           <CardHeader>
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-primary-500/10 border border-primary-500/20">
@@ -637,10 +676,13 @@ export default function Settings() {
               </Button>
             </form>
           </CardContent>
-        </Card>
+              </Card>
+            </motion.div>
+          )}
 
-        <div className="space-y-6">
-          <Card>
+          {activeTab === "system" && (
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+              <Card>
             <CardHeader>
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
@@ -679,9 +721,13 @@ export default function Settings() {
                 )}
               </div>
             </CardContent>
-          </Card>
+              </Card>
+            </motion.div>
+          )}
 
-          <Card>
+          {activeTab === "notifications" && (
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+              <Card>
             <CardHeader>
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
@@ -707,7 +753,9 @@ export default function Settings() {
                 </div>
               ))}
             </CardContent>
-          </Card>
+              </Card>
+            </motion.div>
+          )}
         </div>
       </div>
     </div>
