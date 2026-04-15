@@ -1,19 +1,26 @@
 import React, { useEffect } from "react";
-import { Outlet, useNavigate } from "react-router-dom";
+import { Outlet, useNavigate, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import { useAuth } from "../../contexts/AuthContext";
-import { useLayout } from "../../contexts/LayoutContext";
 
 export default function AdminLayout() {
-  const { isAuthenticated, loading } = useAuth();
-  const { sidebarCollapsed } = useLayout();
+  const { isAuthenticated, loading, isSuperAdmin } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
-    if (!loading && !isAuthenticated) {
-      navigate("/login");
+    if (!loading) {
+      if (!isAuthenticated) {
+        navigate("/login");
+      } else {
+        // Protect Super Admin only routes
+        const superOnlyRoutes = ["/admin/users", "/admin/audit", "/admin/settings"];
+        if (!isSuperAdmin && superOnlyRoutes.some(path => location.pathname.startsWith(path))) {
+          navigate("/admin/dashboard");
+        }
+      }
     }
-  }, [isAuthenticated, loading, navigate]);
+  }, [isAuthenticated, loading, navigate, isSuperAdmin, location.pathname]);
 
   if (loading) {
     return (
@@ -28,14 +35,17 @@ export default function AdminLayout() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-swim-deep via-primary-950/80 to-ocean-950 relative">
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-primary-500/5 rounded-full blur-3xl" />
-        <div className="absolute bottom-0 left-0 w-[500px] h-[500px] bg-ocean-500/5 rounded-full blur-3xl" />
+    <div className="min-h-screen bg-base relative overflow-hidden font-body">
+      {/* Design System Ambient Background Glow */}
+      <div className="absolute inset-0 pointer-events-none transition-opacity duration-500">
+        <div className="absolute top-0 right-0 w-[800px] h-[800px] bg-primary-500/5 dark:bg-primary-500/10 rounded-full blur-[140px] opacity-20 dark:opacity-30" />
+        <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-primary-600/5 dark:bg-primary-600/10 rounded-full blur-[140px] opacity-20 dark:opacity-30" />
       </div>
+
       <Sidebar />
-      <main className={`${sidebarCollapsed ? "ml-20" : "ml-[280px]"} min-h-screen transition-all duration-300 relative z-10`}>
-        <div className="p-6 lg:p-8 page-container">
+      
+      <main className="ml-20 lg:ml-[280px] min-h-screen transition-all duration-300 relative z-10">
+        <div className="p-lg lg:p-xl max-w-[1600px] mx-auto">
           <Outlet />
         </div>
       </main>

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Download, Loader2, X, ExternalLink, Printer } from "lucide-react";
-import { downloadCardPDF, openCardPDF, printCard, PDF_SIZES } from "./cardExport.js";
+import { downloadCardPDF, openCardPDF, printCard, PDF_SIZES, buildCardFileName } from "./cardExport";
 
 export default function BadgeGenerator({ accreditation, event, zones = [], onClose, children }) {
   const [loading, setLoading] = useState(false);
@@ -14,13 +14,13 @@ export default function BadgeGenerator({ accreditation, event, zones = [], onClo
   };
 
   const handleDownloadPDF = () => withLoading(() => 
-    downloadCardPDF(accreditation, event, zones, 
-      `${accreditation?.firstName}_${accreditation?.lastName}_Badge_${accreditation?.badgeNumber || "card"}.pdf`,
-      4, pdfSize)
+    downloadCardPDF(accreditation, event, zones,
+      buildCardFileName(accreditation, "pdf"),
+      8, pdfSize)
   );
 
-  const handleOpenInTab = () => withLoading(() => openCardPDF(accreditation, event, zones, 4, pdfSize));
-  const handlePrint = () => withLoading(() => printCard(accreditation, event, zones, 2, pdfSize));
+  const handleOpenInTab = () => withLoading(() => openCardPDF(accreditation, event, zones, 8, pdfSize));
+  const handlePrint = () => withLoading(() => printCard(accreditation, event, zones, 6, pdfSize));
 
   return (
     <div className="space-y-6 p-6">

@@ -31,11 +31,12 @@ export const ToastProvider = ({ children }) => {
   }, []);
 
   const toast = {
-    success: (message) => addToast(message, "success"),
-    error: (message) => addToast(message, "error"),
-    warning: (message) => addToast(message, "warning"),
-    info: (message) => addToast(message, "info")
+    success: (message) => addToast(message, "success", 5000),
+    error: (message) => addToast(message, "error", 8000),
+    warning: (message) => addToast(message, "warning", 8000),
+    info: (message) => addToast(message, "info", 3000)
   };
+
 
   return (
     <ToastContext.Provider value={toast}>

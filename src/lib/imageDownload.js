@@ -1,5 +1,4 @@
 import { supabase } from "./supabase";
-import JSZip from "jszip";
 
 /**
  * Fetch a URL and return a blob
@@ -48,12 +47,12 @@ const downloadBlob = (blob, fileName) => {
 };
 
 /**
- * Fetch full accreditation record with photo + document columns from DB
+ * Fetch full accreditation record with photo + document columns + metadata from DB
  */
 const fetchFullRecord = async (accreditationId) => {
   const { data, error } = await supabase
     .from("accreditations")
-    .select("id, first_name, last_name, photo_url, id_document_url, club")
+    .select("id, first_name, last_name, photo_url, id_document_url, club, custom_message")
     .eq("id", accreditationId)
     .single();
   if (error) throw error;
@@ -73,9 +72,11 @@ export const downloadSinglePhoto = async (accreditation, type = "photo") => {
 
   if (!url) throw new Error("No file available to download");
 
+  const ext = getExtFromUrl(url);
+  const clubStr = accreditation.club ? `${accreditation.club.replace(/\s+/g, '_')}_` : "";
+  const name = `${clubStr}${accreditation.firstName}_${accreditation.lastName}_${type}.${ext}`;
+
   if (url.startsWith("data:")) {
-    const clubStr = accreditation.club ? `${accreditation.club.replace(/\s+/g, '_')}_` : "";
-    const name = `${clubStr}${accreditation.firstName}_${accreditation.lastName}_${type}.${ext}`;
     const response = await fetch(url);
     const blob = await response.blob();
     downloadBlob(blob, name);
@@ -83,9 +84,6 @@ export const downloadSinglePhoto = async (accreditation, type = "photo") => {
     // Remote URL
     try {
       const blob = await fetchAsBlob(url);
-      const ext = getExtFromUrl(url);
-      const clubStr = accreditation.club ? `${accreditation.club.replace(/\s+/g, '_')}_` : "";
-      const name = `${clubStr}${accreditation.firstName}_${accreditation.lastName}_${type}.${ext}`;
       downloadBlob(blob, name);
     } catch (err) {
       // Fallback: try opening in new tab if fetch fails (CORS)
@@ -95,40 +93,77 @@ export const downloadSinglePhoto = async (accreditation, type = "photo") => {
 };
 
 /**
- * Download all documents for a single accreditation (photo + ID doc)
+ * Download all documents for a single accreditation in a ZIP file
  */
 export const downloadFullRecord = async (accreditation) => {
   const full = await fetchFullRecord(accreditation.id);
-  let count = 0;
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  let addedCount = 0;
 
-  const downloadFile = async (url, type) => {
-    if (!url) return false;
-    const ext = getExtFromUrl(url);
-    const clubStr = accreditation.club ? `${accreditation.club.replace(/\s+/g, '_')}_` : "";
-    const name = `${clubStr}${accreditation.firstName}_${accreditation.lastName}_${type}.${ext}`;
-    if (url.startsWith("data:")) {
-      const resp = await fetch(url);
-      const blob = await resp.blob();
-      downloadBlob(blob, name);
-    } else {
-      try {
-        const blob = await fetchAsBlob(url);
-        downloadBlob(blob, name);
-      } catch {
-        window.open(url, "_blank");
+  const clubStr = full.club ? `${full.club.replace(/\s+/g, '_')}_` : "";
+  const baseName = `${clubStr}${full.first_name || "Unknown"}_${full.last_name || "Unknown"}`;
+
+  const processFile = async (url, type) => {
+    if (!url) return;
+    try {
+      const ext = getExtFromUrl(url);
+      if (url.startsWith("data:")) {
+        const rawB64 = url.split(",")[1];
+        if (rawB64) {
+          zip.file(`${baseName}_${type}.${ext}`, rawB64, { base64: true });
+          addedCount++;
+        }
+      } else {
+        // Remote URL (handle potential CORS issues with fetch)
+        try {
+          const response = await fetch(url);
+          if (!response.ok) throw new Error("Network response was not ok");
+          const blob = await response.blob();
+          zip.file(`${baseName}_${type}.${ext}`, blob);
+          addedCount++;
+        } catch (fetchErr) {
+          console.warn(`Could not fetch ${url} for ZIP, skipping:`, fetchErr);
+        }
       }
+    } catch (err) {
+      console.error(`Failed to add ${type} for ${baseName}:`, err);
     }
-    return true;
   };
 
-  if (await downloadFile(full.photo_url, "photo")) count++;
-  if (full.id_document_url) {
-    await new Promise((r) => setTimeout(r, 800));
-    if (await downloadFile(full.id_document_url, "document")) count++;
+  // 1. Add standard files
+  await processFile(full.photo_url, "photo");
+  await processFile(full.id_document_url, "passport");
+
+  // 2. Add custom files from metadata
+  if (full.custom_message && full.custom_message.startsWith('{')) {
+    try {
+      const meta = JSON.parse(full.custom_message);
+      for (const key of Object.keys(meta)) {
+        if (key.endsWith('Url') && key !== 'textUrl') {
+          const type = key.replace('Url', '');
+          await processFile(meta[key], type);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to parse custom_message for extra documents:", e);
+    }
   }
 
-  if (count === 0) throw new Error("No documents found for this record");
-  return count;
+  if (addedCount === 0) throw new Error("No documents found for this record");
+
+  // Generate and download ZIP
+  const zipBlob = await zip.generateAsync({ type: "blob" });
+  const url = URL.createObjectURL(zipBlob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${baseName}_documents.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+  return addedCount;
 };
 
 /**
@@ -137,8 +172,8 @@ export const downloadFullRecord = async (accreditation) => {
 export const bulkDownloadPhotos = async (accreditations, eventName = "event") => {
   if (!accreditations || accreditations.length === 0) return;
 
-  const JSZipConstructor = typeof JSZip === 'function' ? JSZip : (JSZip.default || JSZip);
-  const zip = new JSZipConstructor();
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
   let addedCount = 0;
 
   const ids = accreditations.map((a) => a.id);

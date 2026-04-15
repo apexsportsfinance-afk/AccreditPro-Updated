@@ -3,16 +3,34 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 import { supabase } from "./supabase";
 
-export const getEmailTemplate = async (templateType) => {
+export const getEmailTemplate = async (templateType, eventId = null) => {
   try {
-    const { data, error } = await supabase
+    // 1. Try to get event-specific template
+    if (eventId) {
+      const { data: eventData, error: eventError } = await supabase
+        .from("email_templates")
+        .select("subject, body")
+        .eq("template_type", templateType)
+        .eq("event_id", eventId)
+        .maybeSingle();
+      
+      if (!eventError && eventData) {
+        return { subject: eventData.subject, body: eventData.body };
+      }
+    }
+
+    // 2. Fallback to global template (where event_id is null)
+    const { data: globalData, error: globalError } = await supabase
       .from("email_templates")
       .select("subject, body")
       .eq("template_type", templateType)
-      .single();
-    if (error || !data) return null;
-    return { subject: data.subject, body: data.body };
-  } catch {
+      .is("event_id", null)
+      .maybeSingle();
+
+    if (globalError || !globalData) return null;
+    return { subject: globalData.subject, body: globalData.body };
+  } catch (err) {
+    console.error("[Email] getEmailTemplate error:", err);
     return null;
   }
 };
@@ -41,12 +59,12 @@ export const sendApprovalEmail = async ({
   badgeNumber,
   zoneCode,
   reportingTimes,
+  eventId = null,
   pdfBase64 = null,
   pdfFileName = null
 }) => {
   try {
-
-    const template = await getEmailTemplate("approved");
+    const template = await getEmailTemplate("approved", eventId);
     let customBody = null;
     let customSubject = null;
     if (template && template.body) {
@@ -112,11 +130,11 @@ export const sendRejectionEmail = async ({
   eventName,
   role,
   remarks,
-  resubmitUrl
+  resubmitUrl,
+  eventId = null
 }) => {
   try {
-
-    const template = await getEmailTemplate("rejected");
+    const template = await getEmailTemplate("rejected", eventId);
     let customBody = null;
     let customSubject = null;
     if (template && template.body) {
@@ -193,6 +211,8 @@ export const sendCustomEmail = async ({
       payload.pdfBase64 = pdfBase64;
       payload.pdfFileName = pdfFileName || "accreditation.pdf";
     }
+    console.log("[Email] Attempting to send via Edge Function...", payload.to);
+    
     const response = await fetch(
       `${SUPABASE_URL}/functions/v1/send-accreditation-email`,
       {
@@ -206,10 +226,10 @@ export const sendCustomEmail = async ({
     );
 
     const data = await response.json();
+    console.log("[Email] Edge Function Response:", data);
 
     if (!response.ok) {
-      console.error("[Email] Custom email send failed:", data);
-      return { success: false, error: data.error || "Failed to send email" };
+      return { success: false, error: data.error || data.message || "SMTP server rejected the request" };
     }
 
     return { success: true, data };
@@ -228,6 +248,7 @@ export const sendAccreditationEmail = async ({
   badgeNumber,
   zoneCode,
   remarks,
+  eventId = null,
   type = "approved"
 }) => {
   if (type === "approved") {
@@ -238,7 +259,8 @@ export const sendAccreditationEmail = async ({
       role,
       accreditationId,
       badgeNumber,
-      zoneCode
+      zoneCode,
+      eventId
     });
   } else {
     return sendRejectionEmail({
@@ -246,7 +268,90 @@ export const sendAccreditationEmail = async ({
       name,
       eventName,
       role,
-      remarks
+      remarks,
+      eventId
     });
   }
 };
+
+export const sendTicketEmail = async ({
+  to,
+  name,
+  eventName,
+  ticketCount,
+  amountPaid,
+  paymentMethod,
+  eventData,
+  qrCodeDataUrl,
+  qrCodeId,
+  orderId = null,
+  eventId = null
+}) => {
+  try {
+    const template = await getEmailTemplate("ticket_delivery", eventId || eventData?.id);
+    let subject = `Booking Confirmation - {eventName}`;
+    let body = "Dear {name},\n\nThank you for booking your ticket(s) with us. We are thrilled to welcome you to {eventName}!\n\nAttached to this email, you will find your official e-ticket(s). Please review your booking details carefully:\n\nEvent: {eventName}\nTotal Tickets: {ticketCount} Person(s)\nAmount Paid: {amountPaid} AED\nPayment Method: {paymentMethod}\nReference ID: {qrCodeId}\n\nPlease keep this email safe and present the attached QR code at the event entrance for scanning. To ensure a smooth entry, please have your ID ready as it may be required for verification.\n\nIf you have any questions or require any assistance, simply reply directly to this email.\n\nWe hope you thoroughly enjoy the event!\n\nWarm regards,\nThe Apex Sports Team";
+
+    // Prepare variables for placeholder replacement
+    const vars = {
+      name: name || "Customer",
+      firstName: name?.split(" ")[0] || "Customer",
+      lastName: name?.split(" ").slice(1).join(" ") || "",
+      eventName,
+      ticketCount,
+      amountPaid,
+      paymentMethod,
+      qrCodeId
+    };
+    
+    const replacePlaceholders = (text, v) => {
+      if (!text) return text;
+      return text
+        .replace(/\{name\}/g, v.name)
+        .replace(/\{firstName\}/g, v.firstName)
+        .replace(/\{lastName\}/g, v.lastName)
+        .replace(/\{eventName\}/g, v.eventName)
+        .replace(/\{ticketCount\}/g, v.ticketCount)
+        .replace(/\{amountPaid\}/g, v.amountPaid)
+        .replace(/\{paymentMethod\}/g, v.paymentMethod)
+        .replace(/\{qrCodeId\}/g, v.qrCodeId);
+    };
+
+    if (template && template.body && template.body.trim() !== '') {
+      body = replacePlaceholders(template.body, vars);
+      subject = replacePlaceholders(template.subject, vars);
+    } else {
+      body = replacePlaceholders(body, vars);
+      subject = replacePlaceholders(subject, vars);
+    }
+
+    // Use the reliable sendCustomEmail but with a simple, professional body
+    const viewUrl = `https://accreditation.apexsports.ae/view-ticket/${qrCodeId}`;
+    
+    // Minimalist HTML - No wrappers, no complex CSS
+    const finalBody = `
+Dear ${name || 'Customer'},<br/><br/>
+Your booking for <strong>${eventName}</strong> has been confirmed.<br/><br/>
+<strong>ORDER SUMMARY:</strong><br/>
+- Tickets: ${ticketCount || 1} Person(s)<br/>
+- Amount Paid: ${amountPaid} AED<br/>
+- Reference ID: ${qrCodeId}<br/><br/>
+<strong>MOBILE TICKETS:</strong><br/>
+View and download your tickets here: <a href="${viewUrl}">${viewUrl}</a><br/><br/>
+Best regards,<br/>The Apex Sports Team
+    `.trim();
+
+    return sendCustomEmail({
+      to,
+      name,
+      subject,
+      body: finalBody, 
+      pdfBase64: null,
+      pdfFileName: null
+    });
+  } catch (error) {
+    console.error("[Email] Ticket email failed to send:", error);
+    return { success: false, error: error.message };
+  }
+};
+

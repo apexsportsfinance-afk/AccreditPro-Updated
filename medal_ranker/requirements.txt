@@ -1,0 +1,9 @@
+streamlit
+pdfplumber
+pandas
+plotly
+openpyxl
+reportlab
+beautifulsoup4
+lxml
+supabase

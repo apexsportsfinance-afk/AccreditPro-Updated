@@ -1,29 +1,16 @@
-# Dependencies
-node_modules/
-.pnpm-store/
-dist/
-.turbo/
-
-# Local Server Uploads (Very Important - do not upload photos)
-server/uploads/
-uploads/
-
-# Environment Variables
+node_modules
 .env
-.env.local
-.env.production
-.env.development
-
-# OS Files
-.DS_Store
-Thumbs.db
-
-# IDE Files
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Temporary Files
-tmp/
+dist
+build
+.next
+.vscode
 *.log
+api/__pycache__
+api/*.pyc
+scripts/__pycache__
+scripts/*.pyc
+tmp
+.gemini
+.venv
+.env.local
+.vercel

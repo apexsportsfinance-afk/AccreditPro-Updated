@@ -1,4 +1,31 @@
-import { format, differenceInYears, differenceInDays, differenceInHours } from "date-fns";
+// Native alternatives to date-fns to avoid ESM issues
+const format = (date, formatStr) => {
+  if (!(date instanceof Date) || isNaN(date.getTime())) return "";
+  const d = date.getDate();
+  const m = date.getMonth();
+  const y = date.getFullYear();
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const fullMonths = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  
+  if (formatStr === "MMM dd, yyyy") return `${months[m]} ${String(d).padStart(2, '0')}, ${y}`;
+  if (formatStr === "MMMM dd, yyyy") return `${fullMonths[m]} ${String(d).padStart(2, '0')}, ${y}`;
+  return date.toLocaleDateString();
+};
+
+const differenceInYears = (d1, d2) => {
+  const diff = d1.getTime() - d2.getTime();
+  return Math.floor(diff / (1000 * 60 * 60 * 24 * 365.25));
+};
+
+const differenceInDays = (d1, d2) => {
+  const diff = d1.getTime() - d2.getTime();
+  return Math.floor(diff / (1000 * 60 * 60 * 24));
+};
+
+const differenceInHours = (d1, d2) => {
+  const diff = d1.getTime() - d2.getTime();
+  return Math.floor(diff / (1000 * 60 * 60));
+};
 
 export const cn = (...classes) => {
   return classes.filter(Boolean).join(" ");
@@ -29,7 +56,7 @@ export const isExpired = (expiresAt) => {
 };
 
 export const getExpirationLabel = (expiresAt) => {
-  if (!expiresAt) return "No expiration";
+  if (!expiresAt) return "Never";
   try {
     const expDate = new Date(expiresAt);
     const now = new Date();
@@ -39,70 +66,19 @@ export const getExpirationLabel = (expiresAt) => {
     const daysLeft = differenceInDays(expDate, now);
     const hoursLeft = differenceInHours(expDate, now);
     if (daysLeft > 30) {
-      return `${Math.floor(daysLeft / 30)} months left`;
+      return `${Math.floor(daysLeft / 30)} mos`;
     } else if (daysLeft > 1) {
-      return `${daysLeft} days left`;
+      return `${daysLeft} days`;
     } else if (hoursLeft > 1) {
-      return `${hoursLeft} hours left`;
+      return `${hoursLeft} hrs`;
     } else {
-      return "Expiring soon";
+      return "Ending";
     }
   } catch {
     return "Unknown";
   }
 };
 
-export const getExpirationStatusColor = (expiresAt) => {
-  if (!expiresAt) return "bg-slate-500/20 text-slate-300 border border-slate-500/40";
-  try {
-    const expDate = new Date(expiresAt);
-    const now = new Date();
-    if (expDate < now) {
-      return "bg-red-500/20 text-red-300 border border-red-500/40";
-    }
-    const daysLeft = differenceInDays(expDate, now);
-    if (daysLeft <= 7) {
-      return "bg-amber-500/20 text-amber-300 border border-amber-500/40";
-    } else if (daysLeft <= 30) {
-      return "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40";
-    } else {
-      return "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40";
-    }
-  } catch {
-    return "bg-slate-500/20 text-slate-300 border border-slate-500/40";
-  }
-};
-
-export const getStatusColor = (status) => {
-  switch (status) {
-    case "approved":
-      return "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40";
-    case "rejected":
-      return "bg-red-500/20 text-red-300 border border-red-500/40";
-    case "pending":
-    default:
-      return "bg-amber-500/20 text-amber-300 border border-amber-500/40";
-  }
-};
-
-export const getRoleColor = (role) => {
-  switch (role?.toLowerCase()) {
-    case "athlete":
-      return "bg-ocean-500/20 text-ocean-300 border border-ocean-500/40";
-    case "official":
-      return "bg-purple-500/20 text-purple-300 border border-purple-500/40";
-    case "coach":
-      return "bg-primary-500/20 text-primary-300 border border-primary-500/40";
-    case "media":
-      return "bg-orange-500/20 text-orange-300 border border-orange-500/40";
-    case "medical":
-      return "bg-rose-500/20 text-rose-300 border border-rose-500/40";
-    case "staff":
-      return "bg-slate-500/20 text-slate-300 border border-slate-500/40";
-    default:
-      return "bg-gray-500/20 text-gray-300 border border-gray-500/40";
-  }
-};
 
 export const generateBadgeNumber = (role, index) => {
   const prefixes = {
@@ -361,12 +337,20 @@ export const COUNTRIES = [
 ];
 
 export const getCountryName = (code) => {
-  const country = COUNTRIES.find(c => c.code === code);
+  if (!code) return "";
+  const country = COUNTRIES.find(c => 
+    c.code?.toUpperCase() === code.toUpperCase() || 
+    c.name?.toLowerCase() === code.toLowerCase()
+  );
   return country?.name || code;
 };
 
 export const getCountryFlag = (code) => {
-  const country = COUNTRIES.find(c => c.code === code);
+  if (!code) return null;
+  const country = COUNTRIES.find(c => 
+    c.code?.toUpperCase() === code.toUpperCase() || 
+    c.name?.toLowerCase() === code.toLowerCase()
+  );
   if (country?.flag) {
     return `https://flagcdn.com/w80/${country.flag.toLowerCase()}.png`;
   }
@@ -409,95 +393,6 @@ export const blobToBase64 = (blob) => {
     const reader = new FileReader();
     reader.onloadend = () => resolve(reader.result);
     reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-};
-
-export const downloadPdfBlob = (blob, fileName) => {
-  return new Promise((resolve, reject) => {
-    if (!blob || blob.size === 0) {
-      reject(new Error("Invalid PDF blob - empty or missing"));
-      return;
-    }
-
-    try {
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = fileName;
-
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-
-      resolve(true);
-    } catch (error) {
-      console.error("Download error:", error);
-      reject(new Error("Failed to download PDF"));
-    }
-  });
-};
-
-export const openPdfInNewTab = (blob) => {
-  return new Promise((resolve, reject) => {
-    if (!blob || blob.size === 0) {
-      reject(new Error("Invalid PDF blob - empty or missing"));
-      return;
-    }
-
-    try {
-      const url = URL.createObjectURL(blob);
-      const newWindow = window.open(url, "_blank", "noopener,noreferrer");
-      if (!newWindow) {
-        const link = document.createElement("a");
-        link.href = url;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      }
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-      }, 120000);
-      resolve(true);
-    } catch (error) {
-      console.error("Open in tab error:", error);
-      reject(error);
-    }
-  });
-};
-
-export const downloadPdfAsDataUrl = async (blob, fileName) => {
-  if (!blob || blob.size === 0) {
-    throw new Error("Invalid PDF blob - empty or missing");
-  }
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const dataUrl = reader.result;
-        const link = document.createElement("a");
-        link.href = dataUrl;
-        link.download = fileName;
-        link.style.cssText = "position:fixed;left:0;top:0;opacity:0;";
-        document.body.appendChild(link);
-        link.click();
-        setTimeout(() => {
-          if (link.parentNode) {
-            document.body.removeChild(link);
-          }
-          resolve(true);
-        }, 500);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    reader.onerror = () => {
-      reject(new Error("Failed to read PDF blob"));
-    };
     reader.readAsDataURL(blob);
   });
 };

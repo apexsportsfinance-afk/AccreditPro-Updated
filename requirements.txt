@@ -1,0 +1,7 @@
+flask
+flask-cors
+pdfplumber
+pandas
+beautifulsoup4
+openpyxl
+# supabase-py # needed for sync_medals.py but medal_api.py doesn't use it directly (it's called via frontend)

@@ -14,7 +14,7 @@ export const FormFieldSettingsAPI = {
         console.error("FormFieldSettingsAPI.getByEventId error:", error);
         throw error;
       }
-      
+
       // Convert to a record format for easy lookup
       const settings = {};
       (data || []).forEach(s => {
@@ -36,9 +36,9 @@ export const FormFieldSettingsAPI = {
 
     const { data, error } = await supabase
       .from("form_field_settings")
-      .upsert(rows, { 
+      .upsert(rows, {
         onConflict: 'event_id,field_name',
-        ignoreDuplicates: false 
+        ignoreDuplicates: false
       })
       .select();
 
@@ -134,7 +134,7 @@ export const GlobalSettingsAPI = {
           }
         } catch (e) { console.warn("V2 clubs parse error", e); }
       }
-      
+
       const v1 = await GlobalSettingsAPI.get(`event_${eventId}_clubs`);
       if (v1) {
         try {
@@ -160,11 +160,11 @@ export const GlobalSettingsAPI = {
       data: clubsArray
     };
     await GlobalSettingsAPI.set(`event_${eventId}_clubs_v2`, JSON.stringify(payloadV2));
-    
+
     // 2. Write to legacy v1 format (array of strings) for backward compatibility
     const fullNames = clubsArray.map(c => c.full || c.short || (typeof c === 'string' ? c : ""));
     await GlobalSettingsAPI.set(`event_${eventId}_clubs`, JSON.stringify([...new Set(fullNames)].sort()));
-    
+
     return true;
   },
   setMany: async (settings) => {
@@ -188,6 +188,8 @@ const mapBroadcastFromDB = (db) => ({
   createdAt: db.created_at,
   targetEvents: db.target_events || [],
   targetHeats: db.target_heats || [],
+  targetRoles: db.target_roles || [],
+  targetZones: db.target_zones || [],
   attachmentUrl: db.attachment_url || null,
   attachmentName: db.attachment_name || null
 });
@@ -205,6 +207,8 @@ export const BroadcastV2API = {
       athlete_id: broadcastData.athleteId || null,
       target_events: broadcastData.targetEvents || [],
       target_heats: broadcastData.targetHeats || [],
+      target_roles: broadcastData.targetRoles || [],
+      target_zones: broadcastData.targetZones || [],
       attachment_url: broadcastData.attachmentUrl || null,
       attachment_name: broadcastData.attachmentName || null
     };
@@ -233,8 +237,8 @@ export const BroadcastV2API = {
     }));
   },
 
-  // Get active broadcasts for an athlete
-  getForAthlete: async (eventId, athleteId) => {
+  // Get active broadcasts for an athlete (filtered by role and zone)
+  getForAthlete: async (eventId, athleteId, athleteRole = null, athleteZones = []) => {
     try {
       // Get global messages for this event
       const { data: globalData, error: globalError } = await supabase
@@ -243,7 +247,7 @@ export const BroadcastV2API = {
         .eq("event_id", eventId)
         .eq("type", "global")
         .is("deleted_at", null);
-      
+
       if (globalError) {
         console.error("getForAthlete global query error:", globalError);
       }
@@ -256,13 +260,30 @@ export const BroadcastV2API = {
         .eq("type", "athlete")
         .eq("athlete_id", athleteId)
         .is("deleted_at", null);
-      
+
       if (athleteError) {
         console.error("getForAthlete athlete query error:", athleteError);
       }
 
-      const allData = [...(globalData || []), ...(athleteData || [])];
-      
+      let allData = [...(globalData || []), ...(athleteData || [])];
+
+      // Filter global messages by role and zone if they have targets
+      if (athleteRole || athleteZones.length > 0) {
+        allData = allData.filter(db => {
+          if (db.type !== 'global') return true; // Private messages always pass
+          
+          const targetRoles = db.target_roles || [];
+          const targetZones = db.target_zones || [];
+
+          // If no targets, it's for everyone
+          if (targetRoles.length === 0 && targetZones.length === 0) return true;
+
+          const roleMatch = targetRoles.length === 0 || targetRoles.includes(athleteRole);
+          const zoneMatch = targetZones.length === 0 || targetZones.some(z => athleteZones.includes(z));
+
+          return roleMatch && zoneMatch;
+        });
+      }
 
       return allData.map(db => ({
         ...mapBroadcastFromDB(db),
@@ -282,6 +303,18 @@ export const BroadcastV2API = {
       .eq("id", id);
     if (error) throw error;
     return true;
+  },
+
+  // Update a broadcast message
+  update: async (id, message) => {
+    const { data, error } = await supabase
+      .from("broadcasts_v2")
+      .update({ message })
+      .eq("id", id)
+      .select()
+      .single();
+    if (error) throw error;
+    return mapBroadcastFromDB(data);
   },
 
   // Get all broadcasts (for admin panel history)
@@ -309,23 +342,78 @@ export const BroadcastV2API = {
   },
 
   // Send global broadcast
-  sendGlobal: async (message, eventId, attachmentUrl = null, attachmentName = null) => {
-    const insertData = {
-      message,
-      event_id: eventId,
-      type: 'global',
-      attachment_url: attachmentUrl || null,
-      attachment_name: attachmentName || null,
-      created_at: new Date().toISOString()
-    };
-    
+  sendGlobal: async (message, eventId, attachmentUrl = null, attachmentName = null, targetRoles = [], targetZones = []) => {
     try {
-      const { data, error } = await supabase
+      // If a NEW attachment is being uploaded, proactively wipe all legacy attachments
+      if (attachmentUrl) {
+        const { data: oldBroadcasts } = await supabase
+          .from("broadcasts_v2")
+          .select("id, attachment_url")
+          .eq("event_id", eventId)
+          .eq("type", "global")
+          .not("attachment_url", "is", null);
+
+        if (oldBroadcasts && oldBroadcasts.length > 0) {
+          // 1. Physically delete old file blobs from the storage bucket
+          const pathsToDelete = oldBroadcasts
+            .map(b => b.attachment_url)
+            .filter(url => url && url.includes('/public/accreditation-files/'))
+            .map(url => url.split('/public/accreditation-files/')[1]);
+
+          if (pathsToDelete.length > 0) {
+            const { error: storageErr } = await supabase.storage.from("accreditation-files").remove(pathsToDelete);
+            if (storageErr) console.error("Failed to delete legacy global storage blobs:", storageErr);
+          }
+
+          // 2. Clear the attachment references off the legacy broadcast rows
+          const oldIds = oldBroadcasts.map(b => b.id);
+          const { error: dbErr } = await supabase
+            .from("broadcasts_v2")
+            .update({ attachment_url: null, attachment_name: null })
+            .in("id", oldIds);
+
+          if (dbErr) console.error("Failed to detach legacy global URLs:", dbErr);
+        }
+      }
+
+      const insertData = {
+        message,
+        event_id: eventId,
+        type: 'global',
+        target_roles: targetRoles || [],
+        target_zones: targetZones || [],
+        attachment_url: attachmentUrl || null,
+        attachment_name: attachmentName || null,
+        created_at: new Date().toISOString()
+      };
+
+      let { data, error } = await supabase
         .from("broadcasts_v2")
         .insert(insertData)
         .select()
         .single();
-        
+
+      // APX-COMPAT: If target_roles/target_zones columns don't exist yet in the schema,
+      // retry the insert without those fields so broadcast still works.
+      if (error && (error.message?.includes('target_roles') || error.message?.includes('target_zones'))) {
+        console.warn("target_roles/target_zones columns not yet in schema — retrying without them. Run the SQL migration to enable full targeting.");
+        const fallbackData = {
+          message,
+          event_id: eventId,
+          type: 'global',
+          attachment_url: attachmentUrl || null,
+          attachment_name: attachmentName || null,
+          created_at: new Date().toISOString()
+        };
+        const result = await supabase
+          .from("broadcasts_v2")
+          .insert(fallbackData)
+          .select()
+          .single();
+        data = result.data;
+        error = result.error;
+      }
+
       if (error) throw error;
       return data;
     } catch (err) {
@@ -334,10 +422,11 @@ export const BroadcastV2API = {
     }
   },
 
+
   // Send targeted athlete broadcast
   sendToAthletes: async (eventId, message, athleteIds, attachmentUrl = null, attachmentName = null) => {
     if (!athleteIds || athleteIds.length === 0) return [];
-    
+
     const broadcasts = athleteIds.map(athleteId => ({
       event_id: eventId,
       type: 'athlete',
@@ -369,89 +458,81 @@ export const HeatSheetMatrixAPI = {
   upsertMatrix: async (eventId, matrixRows, type) => {
     if (!matrixRows || matrixRows.length === 0) return 0;
     
-    // Fetch existing so we can merge Heat/Lane with Rank/Time
-    const { data: existing } = await supabase
-      .from("lane_matrix")
-      .select("*")
-      .eq("meet_id", eventId);
-      
-    const existingMap = new Map();
-    (existing || []).forEach(r => {
-      // Key: eventCode_athleteName
-      const key = `${String(r.event_code || "").toLowerCase()}_${(r.athlete_name || "").toLowerCase()}`;
-      existingMap.set(key, r);
-    });
-    
-    const rows = matrixRows.map(m => {
-      const key = `${String(m.eventCode || "").toLowerCase()}_${(m.athleteName || "").toLowerCase()}`;
-      const ex = existingMap.get(key);
+    let processedCount = 0;
+    console.log(`DIAC_DEBUG: Turbo Matrix Upsert starting for [${matrixRows.length}] rows...`);
 
-      return {
-        meet_id: eventId,
-        event_code: String(m.eventCode || ""),
-        event_name: m.eventName || "Unknown Event",
-        athlete_name: m.athleteName || "Unknown",
-        club: m.club || null,
-        age: m.age || null,
-        // Match existing data if not currently being uploaded
-        heat: type === 'heat_sheet' ? m.heat : (ex?.heat || null),
-        lane: type === 'heat_sheet' ? m.lane : (ex?.lane || null),
-        rank: type === 'event_result' ? m.rank : (ex?.rank || null),
-        result_time: type === 'event_result' ? m.resultTime : (ex?.result_time || null),
-        updated_at: new Date().toISOString()
-      };
-    });
+    // Speed up large files by processing in concurrent batches of 20
+    const batchSize = 20;
+    for (let i = 0; i < matrixRows.length; i += batchSize) {
+      const batch = matrixRows.slice(i, i + batchSize);
+      await Promise.all(batch.map(async (record) => {
+        try {
+          const { data: ex } = await supabase
+            .from("lane_matrix")
+            .select("id, heat, lane, rank, result_time")
+            .eq("meet_id", eventId)
+            .eq("event_code", String(record.eventCode || ""))
+            .eq("athlete_name", record.athleteName || "")
+            .maybeSingle();
 
-    // Deduplicate in JS first to avoid PK violations within the same batch
-    const finalRows = [];
-    const seen = new Set();
-    for (const r of rows) {
-      const key = `${r.event_code}_${r.athlete_name}`.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      finalRows.push(r);
+          if (ex) {
+            const { error: upErr } = await supabase
+              .from("lane_matrix")
+              .update({
+                meet_id: String(eventId).trim(),
+                event_code: String(record.eventCode || "").trim(),
+                heat: type === 'heat_sheet' ? record.heat : (ex.heat || null),
+                lane: type === 'heat_sheet' ? record.lane : (ex.lane || null),
+                rank: type === 'event_result' ? record.rank : (ex.rank || null),
+                result_time: type === 'event_result' ? record.resultTime : (ex.result_time || null),
+                updated_at: new Date().toISOString()
+              })
+              .eq("id", ex.id);
+            if (!upErr) processedCount++;
+          } else {
+            const { error: insErr } = await supabase
+              .from("lane_matrix")
+              .insert({
+                meet_id: String(eventId).trim(),
+                event_code: String(record.eventCode || "").trim(),
+                event_name: (record.eventName || "Unknown Event").substring(0, 200),
+                athlete_name: (record.athleteName || "Unknown").substring(0, 200),
+                club: record.club || null,
+                age: record.age || null,
+                heat: record.heat || null,
+                lane: record.lane || null,
+                rank: record.rank || null,
+                result_time: record.resultTime || null,
+                updated_at: new Date().toISOString()
+              });
+            if (!insErr) processedCount++;
+          }
+        } catch (err) { console.warn("Batch item error:", err); }
+      }));
     }
-    
-    if (finalRows.length === 0) return 0;
-    
-    // CRITICAL: We DO NOT pass the 'id' field. Postgres uses the UNIQUE constraint
-    // on meet_id, event_code, athlete_name to handle the match and then
-    // generates the UUID automatically for new rows.
-    const { data, error } = await supabase
-      .from("lane_matrix")
-      .upsert(finalRows, { 
-        onConflict: 'meet_id,event_code,athlete_name',
-        ignoreDuplicates: false 
-      })
-      .select();
-
-    if (error) {
-      console.error("[HeatSheetMatrixAPI] Upsert error:", error);
-      throw error;
-    }
-    return data?.length || 0;
+    return processedCount;
   },
 
   getForAthlete: async (eventId, athleteFirstName, athleteLastName, athleteClub, athleteBirthDate) => {
     if (!athleteFirstName || !athleteLastName) return [];
-    
+
     const { data, error } = await supabase
       .from("lane_matrix")
       .select("*")
       .eq("meet_id", eventId);
-      
+
     if (error) return [];
-    
+
     // Enhanced Match Filter
     const targetName = `${athleteFirstName} ${athleteLastName}`.toLowerCase().trim();
     const targetTokens = targetName.split(/\s+/).filter(t => t.length >= 2);
-    
+
     return (data || []).filter(row => {
       const dbName = (row.athlete_name || "").toLowerCase().replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
-      
+
       // Exact Match
       if (dbName === targetName) return true;
-      
+
       // Token Match (handles Last, First vs First Last)
       const dbTokens = dbName.split(/\s+/).filter(t => t.length >= 2);
       if (dbTokens.length > 0 && targetTokens.length > 0) {
@@ -459,9 +540,24 @@ export const HeatSheetMatrixAPI = {
         const reverseMatch = dbTokens.every(token => targetName.includes(token));
         if (matchAllTokens || reverseMatch) return true;
       }
-      
+
       return false;
     });
+  },
+
+  // Clears all rows in lane_matrix for a specific event
+  clearMatrixForMeet: async (eventId) => {
+    if (!eventId) return 0;
+    const { data, error } = await supabase
+      .from("lane_matrix")
+      .delete()
+      .eq("meet_id", eventId)
+      .select("id");
+    if (error) {
+      console.error("[HeatSheetMatrixAPI] Clear error:", error);
+      throw error;
+    }
+    return data?.length || 0;
   }
 };
 
@@ -472,67 +568,53 @@ export const AthleteEventsAPI = {
   upsertEvents: async (athleteEvents) => {
     if (!athleteEvents || athleteEvents.length === 0) return 0;
     
-    // 1. Group by athlete and event to perform atomic cleanup
-    const cleanups = athleteEvents.map(m => ({
-      accId: m.accreditation_id,
-      eventCode: m.event_code,
-      round: m.round
-    })).filter(c => c.accId);
+    let processedCount = 0;
+    console.log(`DIAC_DEBUG: Turbo Upsert starting for [${athleteEvents.length}] rows...`);
 
-    // UNIQUE set of cleanup keys to minimize DB calls or complex in-clauses
-    const uniqueCleanups = Array.from(new Set(cleanups.map(c => `${c.accId}|${c.eventCode}|${c.round}`)))
-      .map(k => {
-        const [accId, eventCode, round] = k.split('|');
-        return { accId, eventCode, round };
-      });
+    // Process rows sequentially to avoid 409 Conflict race conditions on maybeSingle check
+    for (const record of athleteEvents) {
+      if (!record.accreditation_id || !record.event_code) continue;
+      try {
+        const round = record.round || 'Finals';
+        const { data: ex } = await supabase
+          .from("athlete_events")
+          .select("id, heat, lane, rank, result_time")
+          .eq("accreditation_id", record.accreditation_id)
+          .eq("event_code", record.event_code)
+          .eq("round", round)
+          .maybeSingle();
 
-    // Chunk cleanup if too many, but for a single PDF upload it's usually manageable
-    for (const c of uniqueCleanups) {
-      await supabase
-        .from("athlete_events")
-        .delete()
-        .eq("accreditation_id", c.accId)
-        .eq("event_code", c.eventCode)
-        .eq("round", c.round);
+        if (ex) {
+          const { error: upErr } = await supabase
+            .from("athlete_events")
+            .update({
+              rank: (record.rank !== undefined && record.rank !== null) ? record.rank : ex.rank,
+              result_time: record.result_time || ex.result_time,
+              heat: (record.heat !== undefined && record.heat !== null) ? record.heat : ex.heat,
+              lane: (record.lane !== undefined && record.lane !== null) ? record.lane : ex.lane,
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", ex.id);
+          if (!upErr) processedCount++;
+        } else {
+          const { error: insErr } = await supabase
+            .from("athlete_events")
+            .insert({ ...record, round });
+          if (!insErr) processedCount++;
+        }
+      } catch (err) { 
+        console.warn("Event item upsert error:", err); 
+      }
     }
-    
-    // 2. Insert the new best-match rows
-    // Only insert rows that were actually matched or at least have a valid accreditation_id
-    const toInsert = athleteEvents.filter(m => m.accreditation_id);
-    if (toInsert.length === 0) return 0;
-
-    const { data, error } = await supabase
-      .from("athlete_events")
-      .upsert(toInsert, {
-        onConflict: 'accreditation_id,event_code,heat,lane',
-        ignoreDuplicates: false
-      })
-      .select();
-
-    if (error) {
-      console.error("[AthleteEventsAPI] Upsert error:", error);
-      throw error;
-    }
-    return data?.length || 0;
+    return processedCount;
   },
 
   getForAthlete: async (accreditationId) => {
     if (!accreditationId) return [];
     
-    // Front-end query directly matches the SQL provided by user
     const { data, error } = await supabase
       .from("athlete_events")
-      .select(`
-        accreditation_id,
-        event_code,
-        event_name,
-        heat,
-        lane,
-        round,
-        session_time,
-        matched,
-        match_confidence
-      `)
+      .select(`*`)
       .eq("accreditation_id", accreditationId)
       .order("event_code", { ascending: true });
       
@@ -541,6 +623,57 @@ export const AthleteEventsAPI = {
       return [];
     }
     return data || [];
+  },
+
+  clearEventsForMeet: async (eventId) => {
+    if (!eventId) return 0;
+
+    // 1. Get ALL accreditations for this event (Paginated to handle >1000 athletes)
+    let accIds = [];
+    let from = 0;
+    const pageSize = 1000;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data: pageData, error: accErr } = await supabase
+        .from("accreditations")
+        .select("id")
+        .eq("event_id", eventId)
+        .range(from, from + pageSize - 1);
+
+      if (accErr) {
+        console.error("[AthleteEventsAPI] Fetch accreditation IDs error:", accErr);
+        throw accErr;
+      }
+      
+      if (pageData && pageData.length > 0) {
+        accIds = [...accIds, ...pageData.map(a => a.id)];
+        if (pageData.length < pageSize) hasMore = false;
+        else from += pageSize;
+      } else {
+        hasMore = false;
+      }
+    }
+
+    if (accIds.length === 0) return 0;
+    let deletedCount = 0;
+
+    // 2. Delete athlete_events in chunks to avoid URL length limits on PostgREST
+    const CHUNK_SIZE = 200;
+    for (let i = 0; i < accIds.length; i += CHUNK_SIZE) {
+      const chunk = accIds.slice(i, i + CHUNK_SIZE);
+      const { data, error } = await supabase
+        .from("athlete_events")
+        .delete()
+        .in("accreditation_id", chunk)
+        .select("accreditation_id");
+
+      if (!error && data) {
+        deletedCount += data.length;
+      }
+    }
+
+    return deletedCount;
   }
 };
 
@@ -653,7 +786,7 @@ export const SportEventsAPI = {
 
   bulkUpsert: async (eventId, events) => {
     if (!events || events.length === 0) return 0;
-    
+
     const rows = events.map(event => ({
       event_id: eventId,
       event_code: event.eventCode,
@@ -668,9 +801,9 @@ export const SportEventsAPI = {
 
     const { data, error } = await supabase
       .from("sport_events")
-      .upsert(rows, { 
+      .upsert(rows, {
         onConflict: 'event_id,event_code',
-        ignoreDuplicates: false 
+        ignoreDuplicates: false
       })
       .select();
 

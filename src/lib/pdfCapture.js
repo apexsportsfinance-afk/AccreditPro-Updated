@@ -14,6 +14,7 @@ export const IMAGE_SIZES = {
   hd:     { scale: 3,  label: "HD" },
   high:   { scale: 4,  label: "High" },
   "4k":   { scale: 6,  label: "4K" },
+  dpi300: { scale: 3.125, label: "300 DPI" },
 };
 
 /**
@@ -40,7 +41,7 @@ const waitForQRInElement = (element, timeoutMs = 8000) =>
  * Capture a visible DOM element using html2canvas.
  * Uses cloneNode to avoid detaching the live React element.
  */
-const captureElement = async (elementId, scale = 6) => {
+const captureElement = async (elementId, scale = 3) => {
   const element = document.getElementById(elementId);
   if (!element) throw new Error(`Element #${elementId} not found`);
 
@@ -102,9 +103,9 @@ const captureElement = async (elementId, scale = 6) => {
   return { canvas, width: actualWidth, height: actualHeight };
 };
 
-export const downloadCapturedPDF = async (frontId, backId, fileName, sizeKey = "card") => {
+  export const downloadCapturedPDF = async (frontId, backId, fileName, sizeKey = "card") => {
   try {
-    const { canvas: frontCanvas, width, height } = await captureElement(frontId, 6);
+    const { canvas: frontCanvas, width, height } = await captureElement(frontId, 3);
     const pdfWidth = width;
     const pdfHeight = height;
 
@@ -112,28 +113,28 @@ export const downloadCapturedPDF = async (frontId, backId, fileName, sizeKey = "
       orientation: pdfWidth > pdfHeight ? "l" : "p",
       unit: "pt",
       format: [pdfWidth, pdfHeight],
-      compress: false,
+      compress: true,
       putOnlyUsedFonts: true,
       floatPrecision: 16
     });
 
     pdf.addImage(
-      frontCanvas.toDataURL("image/png"),
+      frontCanvas.toDataURL("image/png", 1.0),
       "PNG",
       0, 0, pdfWidth, pdfHeight,
       undefined,
-      "NONE"
+      "MEDIUM"
     );
 
     if (backId) {
-      const { canvas: backCanvas, width: bw, height: bh } = await captureElement(backId, 6);
+      const { canvas: backCanvas, width: bw, height: bh } = await captureElement(backId, 3);
       pdf.addPage([bw, bh]);
       pdf.addImage(
-        backCanvas.toDataURL("image/png"),
+        backCanvas.toDataURL("image/png", 1.0),
         "PNG",
         0, 0, bw, bh,
         undefined,
-        "NONE"
+        "MEDIUM"
       );
     }
 
@@ -144,42 +145,84 @@ export const downloadCapturedPDF = async (frontId, backId, fileName, sizeKey = "
   }
 };
 
+/**
+ * Captures multiple elements and saves them as separate pages in a single PDF.
+ * Perfect for multi-ticket orders.
+ */
+export const downloadMultiPagePDF = async (elementIds, fileName, orientation = 'l') => {
+  if (!elementIds || elementIds.length === 0) return;
+  try {
+    let pdf = null;
+
+    for (let i = 0; i < elementIds.length; i++) {
+      const { canvas, width, height } = await captureElement(elementIds[i], 3);
+      
+      if (!pdf) {
+        pdf = new jsPDF({
+          orientation: width > height ? "l" : "p",
+          unit: "pt",
+          format: [width, height],
+          compress: true
+        });
+      } else {
+        pdf.addPage([width, height], width > height ? "l" : "p");
+      }
+
+      pdf.addImage(
+        canvas.toDataURL("image/png", 1.0),
+        "PNG",
+        0, 0, width, height,
+        undefined,
+        "MEDIUM"
+      );
+    }
+
+    if (pdf) {
+      pdf.save(fileName);
+    }
+  } catch (error) {
+    console.error("Multi-Page PDF Error:", error);
+    throw new Error(`Failed to generate multi-page PDF: ${error.message}`);
+  }
+};
+
 export const openCapturedPDFInTab = async (frontId, backId, sizeKey = "card") => {
-  const { canvas, width, height } = await captureElement(frontId, 6);
+  const { canvas, width, height } = await captureElement(frontId, 3);
 
   const pdf = new jsPDF({
     orientation: width > height ? "l" : "p",
     unit: "pt",
-    format: [width, height]
+    format: [width, height],
+    compress: true
   });
 
-  pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, width, height);
+  pdf.addImage(canvas.toDataURL("image/png", 1.0), "PNG", 0, 0, width, height, undefined, "MEDIUM");
 
   if (backId) {
-    const { canvas: bc, width: bw, height: bh } = await captureElement(backId, 2);
+    const { canvas: bc, width: bw, height: bh } = await captureElement(backId, 3);
     pdf.addPage([bw, bh]);
-    pdf.addImage(bc.toDataURL("image/png"), "PNG", 0, 0, bw, bh);
+    pdf.addImage(bc.toDataURL("image/png", 1.0), "PNG", 0, 0, bw, bh, undefined, "MEDIUM");
   }
 
   window.open(pdf.output("bloburl"), "_blank");
 };
 
 export const getCapturedPDFBlob = async (frontId, backId, sizeKey = "card") => {
-  const { canvas, width, height } = await captureElement(frontId, 6);
+  const { canvas, width, height } = await captureElement(frontId, 3);
 
   const pdf = new jsPDF({
     orientation: width > height ? "l" : "p",
     unit: "pt",
     format: [width, height],
-    compress: false
+    compress: true
   });
 
-  pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, width, height);
+  pdf.addImage(canvas.toDataURL("image/png", 1.0), "PNG", 0, 0, width, height, undefined, "MEDIUM");
 
   if (backId) {
-    const { canvas: bc, width: bw, height: bh } = await captureElement(backId, 2);
+    const { canvas: bc, width: bw, height: bh } = await captureElement(backId, 3);
     pdf.addPage([bw, bh]);
-    pdf.addImage(bc.toDataURL("image/png"), "PNG", 0, 0, bw, bh);
+    pdf.addImage(bc.toDataURL("image/png", 1.0), "PNG", 0, 0, bw, bh, undefined, "MEDIUM");
   }
 
   return pdf.output("blob");
@@ -209,6 +252,7 @@ export default {
   PDF_SIZES,
   IMAGE_SIZES,
   downloadCapturedPDF,
+  downloadMultiPagePDF,
   openCapturedPDFInTab,
   getCapturedPDFBlob,
   downloadAsImages

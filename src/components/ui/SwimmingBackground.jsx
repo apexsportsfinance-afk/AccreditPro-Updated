@@ -1,14 +1,25 @@
 import React, { useEffect, useRef } from "react";
+import { useTheme } from "../../contexts/ThemeContext";
 
-const WAVE_COLORS = [
-  "rgba(6, 182, 212, 0.08)",
-  "rgba(14, 165, 233, 0.06)",
-  "rgba(34, 211, 238, 0.05)"
-];
-
-export default function SwimmingBackground({ children }) {
+export default function SwimmingBackground({ children, variant = "default" }) {
+  const { theme } = useTheme();
   const canvasRef = useRef(null);
   const animFrameRef = useRef(null);
+
+  const getWaveColors = (currentTheme) => {
+    if (currentTheme === 'dark') {
+      return [
+        "rgba(6, 182, 212, 0.08)",
+        "rgba(14, 165, 233, 0.06)",
+        "rgba(34, 211, 238, 0.05)"
+      ];
+    }
+    return [
+      "rgba(6, 182, 212, 0.12)",
+      "rgba(14, 165, 233, 0.1)",
+      "rgba(34, 211, 238, 0.08)"
+    ];
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -35,6 +46,7 @@ export default function SwimmingBackground({ children }) {
     const draw = () => {
       ctx.clearRect(0, 0, width, height);
 
+      const colors = getWaveColors(theme);
       waves.forEach((wave, i) => {
         ctx.beginPath();
         ctx.moveTo(0, height);
@@ -48,7 +60,7 @@ export default function SwimmingBackground({ children }) {
 
         ctx.lineTo(width, height);
         ctx.closePath();
-        ctx.fillStyle = WAVE_COLORS[i];
+        ctx.fillStyle = colors[i];
         ctx.fill();
       });
 
@@ -72,10 +84,14 @@ export default function SwimmingBackground({ children }) {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       window.removeEventListener("resize", handleResize);
     };
-  }, []);
+  }, [theme]);
+
+  const bgClass = theme === 'dark' 
+    ? "bg-gradient-to-br from-slate-900 via-cyan-950 to-blue-950" 
+    : "bg-gradient-to-br from-white via-slate-50 to-cyan-50";
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-900 via-cyan-950 to-blue-950">
+    <div className={`relative min-h-screen overflow-hidden transition-colors duration-500 ${bgClass}`}>
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full pointer-events-none"

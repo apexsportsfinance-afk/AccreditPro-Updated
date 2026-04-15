@@ -1,4 +1,53 @@
 import jaroWinkler from 'jaro-winkler';
+import * as XLSX from 'xlsx';
+
+/**
+ * HEATSHEET EVENT PARSERS
+ * Extract metadata from standard event titles like "Girls 12 & Over 1500 LC Meter Freestyle"
+ */
+export function parseGenderFromEvent(eventName) {
+  if (!eventName) return 'Mixed';
+  const lower = eventName.toLowerCase();
+  if (lower.includes('girl') || lower.includes('women') || lower.includes('female')) return 'Female';
+  if (lower.includes('boy') || lower.includes('men') || lower.includes('male')) return 'Male';
+  return 'Mixed';
+}
+
+export function parseAgeCatFromEvent(eventName) {
+  if (!eventName) return 'Open';
+  const match = eventName.match(/(\d+\s*&\s*Over|\d+\s*-\s*\d+|\d+\s*&\s*Under|\d{1,2}\s*Year)/i);
+  return match ? match[1].trim() : 'Open';
+}
+
+export function normalizeTeam(teamStr) {
+  return (teamStr || '').replace(/\s*\([A-Z]+\)$/i, '').trim().toLowerCase();
+}
+
+/**
+ * Normalized Age Calculator for consistent database matching
+ */
+export function calculateAge(birthDateStr) {
+  if (!birthDateStr) return null;
+  const birthDate = new Date(birthDateStr);
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const m = today.getMonth() - birthDate.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+    age--;
+  }
+  return age;
+}
+
+export function normalizeName(name, stripMiddle = false) {
+  let n = (name || '').trim().toLowerCase();
+  if (stripMiddle) {
+    const parts = n.split(/\s+/);
+    if (parts.length >= 2) {
+      return `${parts[0]} ${parts[parts.length - 1]}`;
+    }
+  }
+  return n;
+}
 
 let pdfjsLib = null;
 
@@ -10,438 +59,295 @@ async function getPdfJs() {
 }
 
 /**
- * Parses a HYTEK Meet Manager Heat Sheet or Event Results PDF.
- * Implements Smart 2-Column Detection and Automatic "LastName, FirstName" flipping.
- * Returns an array of matrix objects.
+ * Universal Parser for HYTEK Meet Manager Heat Sheets.
  */
-export async function parseCompetitionPdf(file, type = 'heat_sheet') {
-  const pdfjs = await getPdfJs();
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+export async function parseCompetitionFile(file, type = 'heat_sheet') {
+  const filename = file.name ? file.name.toLowerCase() : '';
 
-  let allItems = [];
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const textContent = await page.getTextContent();
-    
-    // Calculate page mid-point dynamically by finding duplicate "Event" headers on the same Y-axis
-    let leftEventX = null;
-    let rightEventX = null;
-    
-    const pageItems = textContent.items
-      .filter(i => "str" in i && i.str.trim())
-      .map(i => ({
-        str: i.str.trim(),
-        x: i.transform[4],
-        y: i.transform[5],
-        page: pageNum
-      }));
-
-    // Attempt to find the column split (usually around X=300, but varies)
-    const eventItems = pageItems.filter(i => /Event\s+\d+/i.test(i.str) || /Heat\s+\d+/i.test(i.str));
-    for (let i = 0; i < eventItems.length; i++) {
-      for (let j = i + 1; j < eventItems.length; j++) {
-        if (Math.abs(eventItems[i].y - eventItems[j].y) < 5) {
-          // Found two headers on the same line (left and right columns)
-          leftEventX = Math.min(eventItems[i].x, eventItems[j].x);
-          rightEventX = Math.max(eventItems[i].x, eventItems[j].x);
-          break;
-        }
-      }
-      if (leftEventX) break;
+  if (filename.endsWith('.pdf')) {
+    return parseCompetitionPdf(file, type);
+  } else if (filename.endsWith('.htm') || filename.endsWith('.html')) {
+    return parseCompetitionHtml(file, type);
+  } else if (filename.endsWith('.xlsx') || filename.endsWith('.xls') || filename.endsWith('.csv')) {
+    return parseCompetitionExcel(file, type);
+  } else {
+    try {
+      return await parseCompetitionPdf(file, type);
+    } catch (err) {
+      throw new Error("Unsupported file format. Please upload a PDF, HTML, Excel, or CSV file.");
     }
-    
-    // Default split is exactly halfway between left and right headers, or X=300 fallback
-    const dynamicSplitX = (leftEventX && rightEventX) ? ((leftEventX + rightEventX) / 2) : 300;
+  }
+}
 
-    // Assign column based on dynamic split
-    pageItems.forEach(i => {
-      i.col = i.x >= dynamicSplitX ? 1 : 0;
-    });
-    
-    allItems = allItems.concat(pageItems);
+async function parseCompetitionExcel(file, type = 'heat_sheet') {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+    const firstSheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[firstSheetName];
+    const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+    const rows = [];
+    for (const row of rawRows) {
+      if (!row || !row.length) continue;
+      rows.push(row);
+    }
+
+    return processCompetitionRows(rows, type);
+  } catch (err) {
+    throw new Error("Failed to parse Excel file.");
+  }
+}
+
+export async function parseCompetitionHtml(file, type = 'heat_sheet') {
+  const text = await file.text();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(text, 'text/html');
+
+  // For HY-TEK pre-formatted files, we pass each raw line as a single-element row
+  // so the downstream processCompetitionRows can apply HY-TEK regex directly
+  const bodyText = doc.body?.innerText || "";
+  const lines = bodyText.split(/\r?\n/);
+  
+  const allRows = [];
+  for (const line of lines) {
+    // Keep original line (with spaces) for regex matching — do NOT collapse spaces
+    if (line.trim().length === 0) continue;
+    allRows.push([line]); // Pass each raw line as a single-element array
   }
 
+  if (allRows.length === 0) return [];
+  return processCompetitionRows(allRows, type);
+}
+
+function processCompetitionRows(allRows, type = 'heat_sheet') {
+  console.log(`DIAC_DEBUG: Starting Multi-Line row processing for [${allRows.length}] lines...`);
   const results = [];
   let currentEventCode = null;
   let currentEventName = null;
   let currentHeat = null;
+  let currentGender = 'Mixed';
   
-  // Track column bounds for each column individually to handle multi-column pages
-  const columnStates = [
-    { headersFound: false, bounds: { lane: null, name: null, age: null, team: null, time: null, rank: null, seedTime: null } },
-    { headersFound: false, bounds: { lane: null, name: null, age: null, team: null, time: null, rank: null, seedTime: null } }
-  ];
+  let pendingPool = "";
+  const eventRegex = /event\s*(\d+)\s*(.+)/i;
 
-  const eventRegex = /(?:Event\s+)(\d+[A-Z]?\.?\d*)\s+([A-Z].+)/i;
-  const heatRegex = /(?:Heat|#|Flight|Group)\s*(\d+)/i;
+  for (let i = 0; i < allRows.length; i++) {
+    const row = allRows[i];
+    const fullRowText = row.join(" ").trim();
+    const cleanLower = fullRowText.toLowerCase();
 
-  // Sorting for Two-Column Support
-  allItems.sort((a, b) => {
-    if (a.page !== b.page) return a.page - b.page;
-    if (a.col !== b.col) return a.col - b.col;
-    if (Math.abs(b.y - a.y) > 3) return b.y - a.y; 
-    return a.x - b.x;
-  });
-
-  // Group into lines by Page, Column, and Y coordinate
-  let lines = [];
-  let currentLine = [];
-  let currentY = null;
-  let currentPage = null;
-  let currentCol = null;
-
-  for (const item of allItems) {
-    const samePage = currentPage === item.page;
-    const sameCol = currentCol === item.col;
-    const sameY = currentY !== null && Math.abs(currentY - item.y) <= 3;
-
-    if (!samePage || !sameCol || !sameY) {
-      if (currentLine.length > 0) lines.push(currentLine);
-      currentLine = [item];
-      currentY = item.y;
-      currentPage = item.page;
-      currentCol = item.col;
-    } else {
-      currentLine.push(item);
-    }
-  }
-  if (currentLine.length > 0) lines.push(currentLine);
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const fullText = line.map(c => c.str).join(" ");
-    const colIdx = line[0].col || 0;
-    const state = columnStates[colIdx];
-    
-    // 1. Check for Event start (Relaxed regex + handle multi-line)
-    let eventMatch = fullText.match(eventRegex);
-    if (!eventMatch) {
-       // Lookback or lookahead for numeric prefix if "Event" is missing but name looks like an event
-       const altMatch = fullText.match(/^(\d+[A-Z]?\.?\d*)\s+([A-Z].*(?:Men|Women|Boys|Girls|Mixed).*)/i);
-       if (altMatch) eventMatch = altMatch;
-    }
-    
+    // Reset gender on event headers
+    const eventMatch = fullRowText.match(eventRegex);
     if (eventMatch) {
       currentEventCode = eventMatch[1];
       currentEventName = eventMatch[2].trim();
+      currentGender = parseGenderFromEvent(currentEventName);
+      pendingPool = ""; 
+      continue;
+    }
+
+    if (cleanLower.includes('heat')) {
+       const hm = fullRowText.match(/heat\s+(\d+)/i);
+       if (hm) currentHeat = parseInt(hm[1], 10);
+       continue;
+    }
+
+    if (currentEventCode && cleanLower.length > 1) {
+      // Flush pool on HY-TEK separator lines (=====) and column headers (Name/Age/Team)
+      const isSeparator = /^[=\-*\s]+$/.test(fullRowText);
+      const isColumnHeader = /\b(name|age|team|time|seed|finals|prelim)\b/i.test(fullRowText);
+      if (isSeparator || isColumnHeader) {
+        pendingPool = "";
+        continue;
+      }
+
+      // Empty lane: only a bare digit (e.g. "1" or "2") – flush and skip
+      const isEmptyLane = /^\d+\s*$/.test(fullRowText);
+      if (isEmptyLane) {
+        pendingPool = "";
+        continue;
+      }
+
+      pendingPool = (pendingPool + " " + fullRowText).trim();
       
-      // Look at the NEXT line if it looks like a continuation of the event name
-      if (i + 1 < lines.length) {
-        const nextLine = lines[i+1];
-        const nextText = nextLine.map(c => c.str).join(" ");
-        if (nextText.length > 5 && !nextText.match(eventRegex) && !nextText.match(heatRegex) && !nextText.toLowerCase().includes('lane')) {
-          currentEventName += " " + nextText;
-          i++; // Skip next line
-        }
-      }
-
-      currentHeat = null;
-      // Reset bounds for BOTH columns when a new event starts
-      columnStates.forEach(s => {
-        s.headersFound = false;
-        s.bounds = { lane: null, name: null, age: null, team: null, time: null, rank: null, seedTime: null };
-      });
-      continue;
-    }
-
-    if (!currentEventCode) continue;
-
-    // 2. Check for Heat header
-    if (type === 'heat_sheet') {
-      const heatMatch = fullText.match(heatRegex);
-      if (heatMatch) {
-        currentHeat = parseInt(heatMatch[1], 10);
-        // Do NOT reset bounds here; they should persist across heats of the same event
-        continue;
-      }
-    }
-
-    // 3. Header Detection (Lane, Name, Team...)
-    const hasLane = line.find(c => c.str.toLowerCase() === 'lane'); // Strict exact match for header
-    const hasName = line.find(c => c.str.toLowerCase() === 'name');
-
-    if (hasLane || hasName || (type === 'event_result' && line.find(c => c.str.toLowerCase() === 'rank'))) {
-      line.forEach(c => {
-        const txt = c.str.toLowerCase();
-        if (txt === 'lane') state.bounds.lane = { x: c.x };
-        if (txt === 'name') state.bounds.name = { x: c.x };
-        if (txt === 'age') state.bounds.age = { x: c.x };
-        if (txt === 'team' || txt === 'club') state.bounds.team = { x: c.x };
-        if (txt === 'rank') state.bounds.rank = { x: c.x };
-        if (txt === 'seed') state.bounds.seedTime = { x: c.x };
-        if (txt === 'final' || txt === 'result' || (txt.includes('time') && !txt.includes('seed'))) {
-           if (!state.bounds.time) state.bounds.time = { x: c.x };
-        }
-      });
-      state.headersFound = true;
-      continue;
-    }
-
-    // 4. Extraction Logic
-    if (currentEventCode && (currentHeat || type === 'event_result')) {
-      let laneVal = null, rankVal = null, ageVal = null, nameVal = "", teamVal = "", seedVal = "", timeVal = "";
-
-      // Smart adaptive bounds
-      const activeBounds = { ...state.bounds };
-      if (!state.headersFound) {
-        // Find typical lane numbers at the start of the line
-        const firstItem = line[0];
-        if (firstItem && /^\d+$/.test(firstItem.str)) {
-           const num = parseInt(firstItem.str, 10);
-           if (num >= 0 && num <= 10) {
-              // This is likely a lane number. If we don't have bounds, estimate them relative to this X
-              const baseX = firstItem.x;
-              activeBounds.lane = { x: baseX };
-              activeBounds.name = activeBounds.name || { x: baseX + 35 };
-              activeBounds.age = activeBounds.age || { x: baseX + 130 };
-              activeBounds.team = activeBounds.team || { x: baseX + 160 };
-           }
-        }
-
-        // Final fallback if still nothing
-        if (!activeBounds.lane) {
-          const baseX = colIdx === 1 ? 300 : 30;
-          activeBounds.lane = { x: baseX + 10 };
-          activeBounds.name = activeBounds.name || { x: baseX + 35 };
-          activeBounds.age = activeBounds.age || { x: baseX + 160 };
-          activeBounds.team = activeBounds.team || { x: baseX + 200 };
-        }
-      }
-
-      for (const item of line) {
-        const x = item.x;
-        const txt = item.str;
-
-        // Lane/Rank (Leftmost)
-        if (activeBounds.name && x < activeBounds.name.x - 12) {
-          if (/^\d+$/.test(txt)) {
-            const val = parseInt(txt, 10);
-            if (type === 'heat_sheet') {
-               if (val >= 0 && val <= 10) laneVal = val;
-            } else {
-               rankVal = val;
-            }
-          }
-        }
-        // Name (Middle-Left)
-        else if (activeBounds.name && x >= activeBounds.name.x - 20 && (!activeBounds.age || x < activeBounds.age.x - 5)) {
-           nameVal += (nameVal ? " " : "") + txt;
-        }
-        // Age (Middle)
-        else if (activeBounds.age && Math.abs(x - activeBounds.age.x) < 25 && /^\d+$/.test(txt)) {
-          const val = parseInt(txt, 10);
-          if (val > 0 && val < 110) ageVal = val;
-        }
-        // Team (Middle-Right)
-        else if (activeBounds.team && x >= activeBounds.team.x - 15 && (!activeBounds.seedTime || x < activeBounds.seedTime.x - 5) && (!activeBounds.time || x < activeBounds.time.x - 5)) {
-           teamVal += (teamVal ? " " : "") + txt;
-        }
-        // Seed Time
-        else if (activeBounds.seedTime && Math.abs(x - activeBounds.seedTime.x) < 40) {
-           seedVal = txt;
-        }
-        // Final Time (Rightmost)
-        else if (activeBounds.time && Math.abs(x - activeBounds.time.x) < 40) {
-           timeVal = txt;
-        }
-      }
-
-      const cleanName = nameVal.trim();
-      if (!cleanName || cleanName.toLowerCase() === 'empty' || cleanName === '---' || cleanName.length < 3) {
-        continue;
-      }
-
-      let formattedName = cleanName;
-      if (formattedName.includes(',')) {
-        const parts = formattedName.split(',');
-        if (parts.length === 2) {
-          formattedName = `${parts[1].trim()} ${parts[0].trim()}`;
-        }
-      }
-
-      if (laneVal || rankVal || /^\d+$/.test(line[0].str)) {
+      // HY-TEK Matcher
+      const hytekHeatMatch = pendingPool.match(/^(\d+)\s+([A-Za-z\s,.\'-]+?)\s+(\d{1,2})\s+([A-Za-z\s.]+?)\s+(\d+:?\d*\.\d+|NT|NS|SCR|DQ)/i);
+      
+      if (hytekHeatMatch) {
+        const athleteName = hytekHeatMatch[2].trim();
+        console.log(`DIAC_DEBUG: Parsed Row | Event: ${currentEventCode} | Athlete: ${athleteName} | Gender: ${currentGender} | Age: ${hytekHeatMatch[3]}`);
+        
         results.push({
           eventCode: currentEventCode,
           eventName: currentEventName,
-          heat: currentHeat || 1,
-          lane: laneVal,
-          athleteName: formattedName,
-          age: ageVal,
-          club: teamVal.trim(),
-          seedTime: seedVal || null,
-          rank: rankVal || (type === 'event_result' ? parseInt(line[0].str, 10) : null),
-          resultTime: timeVal || null
+          athleteName: athleteName,
+          gender: currentGender,
+          age: parseInt(hytekHeatMatch[3], 10),
+          rank: null,
+          lane: parseInt(hytekHeatMatch[1], 10),
+          resultTime: null,
+          seedTime: hytekHeatMatch[5].trim(),
+          teamName: hytekHeatMatch[4].trim(),
+          heat: currentHeat || 1
         });
+        pendingPool = "";
+        continue;
       }
+
+      // Result Matcher
+      const universalMatch = pendingPool.match(/([^\d\n\r]{2,})\s+(\d{1,2})([\d-]*)\s*([^\d\n\r]{3,})\s+(\d+:?\d*\.\d+[qQ]?|NT|NS|SCR|DQ)/i);
+      if (universalMatch) {
+          const isResult = (type === 'event_result');
+          results.push({
+            eventCode: currentEventCode,
+            eventName: currentEventName,
+            athleteName: universalMatch[4].replace(/Name|Team|Finals|Time|Prelim|Seed/gi, '').trim(),
+            gender: currentGender,
+            age: parseInt(universalMatch[2], 10),
+            rank: isResult ? (parseInt(universalMatch[3], 10) || 0) : null,
+            lane: isResult ? null : (parseInt(universalMatch[3], 10) || 0),
+            resultTime: isResult ? universalMatch[5].trim() : null,
+            seedTime: isResult ? null : universalMatch[5].trim(),
+            teamName: universalMatch[1].trim(),
+            heat: currentHeat || 1
+          });
+          pendingPool = ""; 
+          continue;
+      }
+      
+      if (pendingPool.split(" ").length > 15) pendingPool = "";
     }
   }
-
   return results;
 }
 
-// Helpers for the matching recipe
-function parseAgeCatFromEvent(eventName) {
-  const match = eventName.match(/(\d+(?:\s*&\s*Over|\s*-\s*\d+)?)/i);
-  return match ? match[1] : "Unknown";
-}
+async function parseCompetitionPdf(file, type = 'heat_sheet') {
+  const pdfjs = await getPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const allRows = [];
 
-function parseGenderFromEvent(eventName) {
-  const lower = eventName.toLowerCase();
-  if (lower.includes('girl') || lower.includes('women')) return 'F';
-  if (lower.includes('boy') || lower.includes('men')) return 'M';
-  return 'Mixed';
-}
-
-function normalizeTeam(teamStr) {
-  return (teamStr || '').replace(/\s*\([A-Z]+\)$/i, '').trim().toLowerCase();
-}
-
-function normalizeName(name, stripMiddle = false) {
-  let n = (name || '').trim().toLowerCase();
-  if (stripMiddle) {
-    const parts = n.split(/\s+/);
-    if (parts.length >= 2) {
-      return `${parts[0]} ${parts[parts.length - 1]}`;
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const itemsByRow = {};
+    for (const item of content.items) {
+      const y = Math.round(item.transform[5]);
+      if (!itemsByRow[y]) itemsByRow[y] = [];
+      itemsByRow[y].push(item);
+    }
+    const sortedY = Object.keys(itemsByRow).sort((a, b) => b - a);
+    for (const y of sortedY) {
+      const row = itemsByRow[y].sort((a, b) => a.transform[4] - b.transform[4]).map(it => it.str.trim()).filter(Boolean);
+      if (row.length > 0) allRows.push(row);
     }
   }
-  return n;
+
+  return processCompetitionRows(allRows, type);
 }
 
 /**
- * Executes the matching cascade.
- * Includes Deduplication: An athlete can only match one lane per event/heat/round.
+ * RESILIENT ATHLETE MATCHING ENGINE
+ * Handles name concatenation, club partial matches, and gender locking.
  */
-export function matchAthleteEvents(parsedRows, accreditationRecords) {
-  const matches = parsedRows.map(row => {
-    const pdfName = row.athleteName;
-    const pdfAge = row.age;
-    const pdfTeam = row.club || "";
-    const pdfEventCode = row.eventCode;
-    const pdfEventName = row.eventName;
-    const pdfHeat = row.heat;
-    const pdfLane = row.lane || row.rank; 
-    
-    const pdfGender = parseGenderFromEvent(pdfEventName);
-    const pdfAgeCat = parseAgeCatFromEvent(pdfEventName);
-    const pdfRound = pdfEventName.toLowerCase().includes('final') ? 'Finals' : 'Prelims';
+export async function matchAthleteEvents(parsedRows, accreditationRecords) {
+  console.log(`DIAC_DEBUG: Matching [${parsedRows.length}] rows against [${accreditationRecords.length}] accreditations.`);
+  const bestMatches = [];
+  const seenMatchKeys = new Set();
 
-    let matched = false;
-    let matchConfidence = 0.0;
-    let matchLog = [];
-    let accreditId = null;
+  for (const row of parsedRows) {
+    const pdfName = (row.athleteName || '').trim();
+    if (!pdfName) continue;
 
-    const normPdfName = pdfName.toLowerCase();
-    const normPdfTeam = normalizeTeam(pdfTeam);
+    let bestDBMatch = null;
+    let highestScore = 0;
 
-    // Filter accreditation records by gender/age if possible (Optimization)
-    const relevantAccs = accreditationRecords.filter(acc => {
-      // If we have gender in event name, filter by it
-      if (pdfGender !== 'Mixed' && acc.gender) {
-         if (acc.gender.charAt(0).toUpperCase() !== pdfGender) return false;
-      }
-      return true;
-    });
-
-    for (const acc of relevantAccs) {
-      if (!acc.name || !acc.club_name) continue;
-
-      const normAccName = normalizeName(acc.name);
-      const normAccTeam = normalizeTeam(acc.club_name);
+    for (const acc of accreditationRecords) {
+      // 1. Gender Filter (STRICT) - Both normalized to 'Male'/'Female'
+      const rowGen = (row.gender || '').toLowerCase();
+      const dbGen = (acc.gender || '').toLowerCase();
       
-      const exactName = normAccName === normPdfName;
-      const jwScore = jaroWinkler(normAccName, normPdfName);
+      if (rowGen !== 'mixed' && rowGen !== dbGen) {
+         // Some databases use abbreviated genders (e.g. M/F)
+         if (!(rowGen.startsWith(dbGen.charAt(0)) || dbGen.startsWith(rowGen.charAt(0)))) {
+            continue;
+         }
+      }
+
+      // 2. Name Cleaning and Tokenization
+      const cleanPdfName = pdfName.toLowerCase().replace(/[,.-]/g, ' ');
+      const cleanDbName = (acc.name || '').toLowerCase().replace(/[,.-]/g, ' ');
       
-      const pdfNameNoMiddle = normalizeName(pdfName, true);
-      const accNameNoMiddle = normalizeName(acc.name, true);
-      const fuzzyNameMatch = exactName || (pdfNameNoMiddle === accNameNoMiddle) || (jwScore >= 0.94);
-
-      const exactAge = (pdfAge === null || pdfAge === undefined) ? true : Number(acc.age) === Number(pdfAge);
-      const exactTeam = normAccTeam === normPdfTeam;
-      const teamOverlaps = normAccTeam && normPdfTeam && (normAccTeam.includes(normPdfTeam) || normPdfTeam.includes(normAccTeam));
+      const pdfTokens = cleanPdfName.split(/\s+/).filter(t => t.length > 2);
+      const dbTokens = cleanDbName.split(/\s+/).filter(t => t.length > 2);
       
-      // Cascade 1: Triple Match (Name + Age + Team) -> 1.0
-      if (fuzzyNameMatch && exactAge && exactTeam) {
-        matchConfidence = 1.0;
-        matchLog = ["Strong Triple Match: Name, Age, and Club match."];
-        accreditId = acc.id;
-        matched = true;
-        break;
-      }
+      if (pdfTokens.length === 0 || dbTokens.length === 0) continue;
 
-      // Cascade 2: Strong Name + Age + Partial Team -> 0.95
-      if (fuzzyNameMatch && exactAge && teamOverlaps) {
-        matchConfidence = 0.95;
-        matchLog = ["High Confidence: Name and Age match. Club name overlaps."];
-        accreditId = acc.id;
-        matched = true;
-        break;
+      // 3. Token Set Intersect (Resilient to concatenation)
+      let matchCount = 0;
+      pdfTokens.forEach(pt => {
+        if (dbTokens.some(dt => dt.includes(pt) || pt.includes(dt))) {
+          matchCount++;
+        }
+      });
+      
+      // Temporary debug for "0 verified matches" issue on live site
+      if (pdfName.length > 3 && cleanDbName.includes(pdfTokens[0])) {
+        console.log(`DIAC_DEBUG: Matching Candidate - PDF: [${pdfTokens.join()}] | DB: [${dbTokens.join()}] -> MatchCount: ${matchCount}`);
       }
+      
+      const avgRatio = matchCount / Math.max(pdfTokens.length, dbTokens.length);
+      const minRatio = pdfTokens.length === 1 ? 0.9 : 0.45;
 
-      // Cascade 3: Strong Name + Team Match (Age missing or slight mismatch) -> 0.90
-      if (exactName && exactTeam) {
-        matchConfidence = 0.90;
-        matchLog = ["Accurate Match: Exact Name and Club match."];
-        accreditId = acc.id;
-        matched = true;
-        break;
-      }
+      if (avgRatio >= minRatio && matchCount >= 1) { 
+         let score = avgRatio * 20;
+         
+         // 4. Club Match Bonus
+         const pdfTeam = (row.teamName || row.team || '').toLowerCase();
+         const dbClub = (acc.club_name || '').toLowerCase();
+         if (pdfTeam && dbClub) {
+            if (dbClub.includes(pdfTeam) || pdfTeam.includes(dbClub)) {
+               score += 20;
+            }
+         }
 
-      // Cascade 4: Jaro-Winkler Name Cross-Check -> 0.85
-      if (jwScore >= 0.96 && exactAge) {
-        matchConfidence = 0.85;
-        matchLog = [`Fuzzy Match: Jaro-Winkler (${jwScore.toFixed(2)}) with age match.`];
-        accreditId = acc.id;
-        matched = true;
-        break;
+         // 5. Age Match 
+         const dbAge = acc.age;
+         if (row.age && dbAge) {
+            const ageDiff = Math.abs(parseInt(row.age, 10) - parseInt(dbAge, 10));
+            if (ageDiff === 0) score += 5;
+            else if (ageDiff > 1) score -= 15; // Soft penalty instead of nuclear wipe
+         }
+         
+         const minScoreThreshold = 12; 
+         if (score > highestScore && score >= minScoreThreshold) {
+            highestScore = score;
+            bestDBMatch = acc;
+         }
       }
     }
 
-    return {
-      accreditation_id: accreditId,
-      pdf_name: pdfName,
-      pdf_team: pdfTeam,
-      event_code: pdfEventCode,
-      event_name: pdfEventName,
-      age_cat: pdfAgeCat,
-      gender: pdfGender,
-      heat: pdfHeat || 1,
-      lane: pdfLane || 0,
-      round: pdfRound,
-      session_time: row.sessionTime || null,
-      seed_time: row.seedTime,
-      matched,
-      match_confidence: matchConfidence,
-      match_log: matchLog || ["No match found."]
-    };
-  });
-
-  // --- DEDUPLICATION STEP ---
-  // Ensure one registration per event/heat/round combination.
-  // If Yassin Samir matches Lane 1 and Lane 6, we only keep the one with higher confidence.
-  const deduplicated = [];
-  const bestMatches = new Map(); // Key: accId_eventCode_heat_round
-
-  matches.forEach(m => {
-    if (!m.matched || !m.accreditation_id) {
-      deduplicated.push(m);
-      return;
+    if (bestDBMatch && highestScore > 0) {
+      const roundStr = row.eventName.toLowerCase().includes('prelim') ? 'Prelims' : 'Finals';
+      const key = `${bestDBMatch.id}|${row.eventCode}|${roundStr}`;
+      
+      if (!seenMatchKeys.has(key)) {
+        bestMatches.push({
+          accreditation_id: bestDBMatch.id,
+          event_code: row.eventCode,
+          event_name: row.eventName,
+          heat: row.heat,
+          lane: row.lane,
+          rank: row.rank,
+          result_time: row.resultTime,
+          round: roundStr,
+          seed_time: row.seedTime,
+          matched: true
+        });
+        seenMatchKeys.add(key);
+      }
     }
+  }
 
-    const key = `${m.accreditation_id}_${m.event_code}_${m.heat}_${m.round}`;
-    const existing = bestMatches.get(key);
-
-    if (!existing || m.match_confidence > existing.match_confidence) {
-      bestMatches.set(key, m);
-    }
-  });
-
-  // Collect the best matches
-  const uniqueAccMatches = Array.from(bestMatches.values());
-  
-  // Combine unique matches with unmatched rows
-  const finalResult = [...uniqueAccMatches, ...matches.filter(m => !m.matched)];
-
-  return finalResult;
+  return bestMatches;
 }

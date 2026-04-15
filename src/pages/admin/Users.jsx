@@ -8,9 +8,10 @@ import Modal from "../../components/ui/Modal";
 import Badge from "../../components/ui/Badge";
 import DataTable from "../../components/ui/DataTable";
 import EmptyState from "../../components/ui/EmptyState";
+import MultiSearchableSelect from "../../components/ui/MultiSearchableSelect";
 import { useToast } from "../../components/ui/Toast";
 import { useAuth } from "../../contexts/AuthContext";
-import { UsersAPI } from "../../lib/storage";
+import { UsersAPI, EventsAPI } from "../../lib/storage";
 import { formatDate } from "../../lib/utils";
 
 const ROLES = [
@@ -31,8 +32,11 @@ export default function Users() {
     name: "",
     email: "",
     password: "",
-    role: "event_admin"
+    role: "event_admin",
+    eventIds: []
   });
+  const [allEvents, setAllEvents] = useState([]);
+  const [accessMappings, setAccessMappings] = useState({});
   const { user: currentUser, isSuperAdmin } = useAuth();
   const toast = useToast();
 
@@ -43,8 +47,14 @@ export default function Users() {
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const data = await UsersAPI.getAll();
-      setUsers(data);
+      const [userData, eventData, mappingData] = await Promise.all([
+        UsersAPI.getAll(),
+        EventsAPI.getAll(),
+        UsersAPI.getAccessMappings()
+      ]);
+      setUsers(userData);
+      setAllEvents(eventData);
+      setAccessMappings(mappingData);
     } catch (error) {
       console.error("Failed to load users:", error);
       toast.error("Failed to load users");
@@ -58,7 +68,8 @@ export default function Users() {
       name: "",
       email: "",
       password: "",
-      role: "event_admin"
+      role: "event_admin",
+      eventIds: []
     });
     setEditingUser(null);
   };
@@ -70,7 +81,8 @@ export default function Users() {
         name: user.name,
         email: user.email,
         password: "",
-        role: user.role
+        role: user.role,
+        eventIds: accessMappings[user.id] || []
       });
     } else {
       resetForm();
@@ -107,9 +119,24 @@ export default function Users() {
           updates.password = formData.password;
         }
         await UsersAPI.update(editingUser.id, updates);
+        
+        // Update event assignments if it's an event admin
+        if (formData.role === "event_admin") {
+          await UsersAPI.updateAccessMapping(editingUser.id, formData.eventIds);
+        } else {
+          // Clear assignments for other roles
+          await UsersAPI.updateAccessMapping(editingUser.id, []);
+        }
+        
         toast.success("User updated successfully");
       } else {
-        await UsersAPI.create(formData);
+        const newUser = await UsersAPI.create(formData);
+        
+        // Save event assignments for new user
+        if (formData.role === "event_admin" && formData.eventIds.length > 0) {
+          await UsersAPI.updateAccessMapping(newUser.id, formData.eventIds);
+        }
+        
         toast.success("User created successfully");
       }
 
@@ -174,7 +201,7 @@ export default function Users() {
       key: "name",
       header: "Name",
       sortable: true,
-      render: (row) => (
+      render: (_, row) => (
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-600 to-slate-700 flex items-center justify-center">
             <span className="text-lg font-bold text-white">
@@ -182,8 +209,8 @@ export default function Users() {
             </span>
           </div>
           <div>
-            <p className="font-medium text-white">{row.name}</p>
-            <p className="text-lg text-slate-500">{row.email}</p>
+            <p className="font-semibold text-main tracking-wide">{row.name}</p>
+            <p className="text-[11px] font-mono text-muted uppercase tracking-widest">{row.email}</p>
           </div>
         </div>
       )
@@ -192,10 +219,17 @@ export default function Users() {
       key: "role",
       header: "Role",
       sortable: true,
-      render: (row) => (
-        <div className="flex items-center gap-2">
-          {getRoleIcon(row.role)}
-          {getRoleBadge(row.role)}
+      render: (_, row) => (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            {getRoleIcon(row.role)}
+            {getRoleBadge(row.role)}
+          </div>
+          {row.role === "event_admin" && accessMappings[row.id] && (
+            <span className="text-[10px] text-muted font-medium">
+              {accessMappings[row.id].length} Events Assigned
+            </span>
+          )}
         </div>
       )
     },
@@ -203,8 +237,8 @@ export default function Users() {
       key: "createdAt",
       header: "Created",
       sortable: true,
-      render: (row) => (
-        <span className="text-lg text-slate-400">
+      render: (_, row) => (
+        <span className="text-xs font-mono text-muted uppercase tracking-widest">
           {formatDate(row.createdAt)}
         </span>
       )
@@ -212,17 +246,17 @@ export default function Users() {
     {
       key: "actions",
       header: "Actions",
-      render: (row) => (
+      render: (_, row) => (
         <div className="flex items-center gap-2">
           <button
             onClick={(e) => {
               e.stopPropagation();
               handleOpenModal(row);
             }}
-            className="p-2 rounded-lg hover:bg-slate-700 transition-colors"
+            className="p-2 rounded-lg hover:bg-base-alt transition-colors"
             title="Edit"
           >
-            <Edit className="w-4 h-4 text-slate-400" />
+            <Edit className="w-4 h-4 text-muted hover:text-main" />
           </button>
           {row.id !== currentUser?.id && (
             <button
@@ -255,9 +289,9 @@ export default function Users() {
     <div id="users_page" className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Users</h1>
-          <p className="text-lg text-slate-400 font-extralight">
-            Manage system users and permissions
+          <h1 className="text-3xl font-bold text-main mb-1 uppercase tracking-tight">Access Control</h1>
+          <p className="text-sm text-muted font-medium tracking-wide uppercase opacity-70">
+            Biometric and Role-Based Identity Management
           </p>
         </div>
         <Button icon={Plus} onClick={() => handleOpenModal()}>
@@ -268,7 +302,7 @@ export default function Users() {
       {loading ? (
         <div className="flex flex-col items-center justify-center py-16">
           <Loader2 className="w-10 h-10 text-primary-500 animate-spin mb-4" />
-          <p className="text-lg text-slate-400">Loading users...</p>
+          <p className="text-lg text-muted">Loading users...</p>
         </div>
       ) : users.length === 0 ? (
         <EmptyState
@@ -337,6 +371,21 @@ export default function Users() {
             options={ROLES}
           />
 
+          {formData.role === "event_admin" && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-main">Assign Events</label>
+              <MultiSearchableSelect
+                options={allEvents.map(ev => ({ value: ev.id, label: ev.name }))}
+                value={formData.eventIds}
+                onChange={(vals) => setFormData(prev => ({ ...prev, eventIds: vals }))}
+                placeholder="Select events..."
+              />
+              <p className="text-[10px] text-muted italic">
+                Event Admins will only be able to see and manage the events assigned here.
+              </p>
+            </div>
+          )}
+
           <div className="flex gap-3 pt-4">
             <Button
               type="button"
@@ -362,11 +411,11 @@ export default function Users() {
       >
         <div className="p-6 space-y-4">
           <div className="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <AlertCircle className="w-6 h-6 text-red-400 flex-shrink-0" />
+            <AlertCircle className="w-6 h-6 text-red-500 flex-shrink-0" />
             <div>
-              <p className="text-lg font-semibold text-red-400">Permanently delete this user?</p>
-              <p className="text-lg text-slate-300 font-extralight mt-1">
-                This will remove <span className="text-white font-medium">{deleteModal.user?.name}</span> ({deleteModal.user?.email}) from the system entirely. This action cannot be undone.
+              <p className="text-lg font-semibold text-red-600 dark:text-red-400">Permanently delete this user?</p>
+              <p className="text-lg text-muted font-extralight mt-1">
+                This will remove <span className="text-main font-medium">{deleteModal.user?.name}</span> ({deleteModal.user?.email}) from the system entirely. This action cannot be undone.
               </p>
             </div>
           </div>

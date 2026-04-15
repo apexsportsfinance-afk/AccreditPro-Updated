@@ -34,93 +34,56 @@ export const AuthProvider = ({ children }) => {
     fetchedProfileForRef.current = sessionUser.id;
 
     try {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("role, full_name")
-        .eq("id", sessionUser.id)
-        .single();
-
-      if (!mountedRef.current) return;
-
-      if (!error && data) {
-        setUser((current) => {
-          if (!current) return current;
-          return {
-            ...current,
-            name: data.full_name || current.name,
-            role: data.role || current.role
-          };
-        });
-        return;
-      }
-
-      if (error && mountedRef.current) {
-        await new Promise((r) => setTimeout(r, 3000));
-        if (!mountedRef.current) return;
-        const retry = await supabase
+      // Fetch profile AND access mappings in parallel for speed
+      const [profileRes, accessMapping] = await Promise.all([
+        supabase
           .from("profiles")
           .select("role, full_name")
           .eq("id", sessionUser.id)
-          .single();
-        if (!mountedRef.current) return;
-        if (!retry.error && retry.data) {
-          setUser((current) => {
-            if (!current) return current;
-            return {
-              ...current,
-              name: retry.data.full_name || current.name,
-              role: retry.data.role || current.role
-            };
-          });
-        }
+          .single(),
+        UsersAPI.getAccessMappings()
+      ]);
+
+      if (!mountedRef.current) return;
+
+      const { data, error } = profileRes;
+      
+      // Update user state with both profile info and allowed events
+      setUser((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          name: data?.full_name || current.name,
+          role: data?.role || current.role,
+          allowedEventIds: accessMapping[sessionUser.id] || []
+        };
+      });
+
+      if (error && mountedRef.current) {
+        // Retry logic if needed (keep existing retry logic but adapted if possible, or simplified)
+        // For now, let's keep it simple to ensure it doesn't hang.
+        console.warn("Profile fetch error, using defaults.");
       }
     } catch (err) {
-      if (
-        err?.name === "AbortError" ||
-        err?.message?.includes("signal is aborted") ||
-        err?.message?.includes("Failed to fetch")
-      ) {
-        await new Promise((r) => setTimeout(r, 3000));
-        if (!mountedRef.current) return;
-        try {
-          const retry = await supabase
-            .from("profiles")
-            .select("role, full_name")
-            .eq("id", sessionUser.id)
-            .single();
-          if (!mountedRef.current) return;
-          if (!retry.error && retry.data) {
-            setUser((current) => {
-              if (!current) return current;
-              return {
-                ...current,
-                name: retry.data.full_name || current.name,
-                role: retry.data.role || current.role
-              };
-            });
-          }
-        } catch (_) {
-          // Retry also failed — user stays with metadata role
-        }
-        return;
-      }
-      console.warn("Background profile fetch failed:", err);
+      console.warn("Background auth enhancement failed:", err);
     }
   };
 
   useEffect(() => {
     mountedRef.current = true;
-
+ 
     const initAuth = async () => {
       try {
         const {
           data: { session }
         } = await supabase.auth.getSession();
-
+ 
         if (!mountedRef.current) return;
-
+ 
         if (session?.user) {
-          setUser(getSafeUserFromSession(session.user));
+          const safeUser = getSafeUserFromSession(session.user);
+          setUser(safeUser);
+          // Fire background enhancement (async)
           upgradeProfileRole(session.user);
         }
       } catch (error) {
@@ -129,30 +92,30 @@ export const AuthProvider = ({ children }) => {
         if (mountedRef.current) setLoading(false);
       }
     };
-
+ 
     initAuth();
-
+ 
     const {
       data: { subscription }
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (!mountedRef.current) return;
-
+ 
       if (session?.user) {
         const isNewUser = fetchedProfileForRef.current !== session.user.id;
-
+ 
         if (isNewUser) {
-          fetchedProfileForRef.current = null;
-          setUser(getSafeUserFromSession(session.user));
+          const safeUser = getSafeUserFromSession(session.user);
+          setUser(safeUser);
           upgradeProfileRole(session.user);
         }
       } else {
         setUser(null);
         fetchedProfileForRef.current = null;
       }
-
+ 
       if (mountedRef.current) setLoading(false);
     });
-
+ 
     return () => {
       mountedRef.current = false;
       subscription.unsubscribe();
@@ -204,12 +167,20 @@ export const AuthProvider = ({ children }) => {
     );
   };
 
+  const canAccessEvent = (eventId) => {
+    if (!user) return false;
+    if (user.role === "super_admin" || user.role === "admin") return true;
+    if (!user.allowedEventIds) return false;
+    return user.allowedEventIds.includes(eventId);
+  };
+
   const value = {
     user,
     loading,
     login,
     logout,
     hasPermission,
+    canAccessEvent,
     isAuthenticated: !!user,
     isSuperAdmin: user?.role === "super_admin" || user?.role === "admin",
     isEventAdmin: user?.role === "event_admin",

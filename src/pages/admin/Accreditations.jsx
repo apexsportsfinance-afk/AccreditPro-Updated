@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import SearchableSelect from "../../components/ui/SearchableSelect";
 import { motion } from "motion/react";
@@ -8,6 +8,7 @@ import {
   Download,
   CheckCircle,
   XCircle,
+  Clock,
   Eye,
   Trash2,
   Loader2,
@@ -17,11 +18,14 @@ import {
   Check,
   Plus,
   AlertCircle,
+  AlertTriangle,
   Mail,
-  Image as ImageIcon,
-  Clock
+  ImageIcon,
+  CreditCard,
+  User,
+  FileText,
+  Files
 } from "lucide-react";
-import Skeleton from "../../components/ui/Skeleton";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
 import Select from "../../components/ui/Select";
@@ -31,6 +35,7 @@ import DataTable from "../../components/ui/DataTable";
 import Card, { CardContent } from "../../components/ui/Card";
 import EmptyState from "../../components/ui/EmptyState";
 import { useToast } from "../../components/ui/Toast";
+import { useAuth } from "../../contexts/AuthContext";
 import AccreditationCardPreview from "../../components/accreditation/AccreditationCardPreview";
 import BadgeGenerator from "../../components/accreditation/BadgeGenerator";
 import {
@@ -48,18 +53,14 @@ import {
 import ComposeEmailModal from "../../components/accreditation/ComposeEmailModal";
 import { generatePdfAttachment } from "../../lib/pdfEmailHelper";
 import {
-  cn,
   formatDate,
-  getStatusColor,
-  getRoleColor,
   calculateAge,
   ROLES,
   ROLE_BADGE_PREFIXES,
   COUNTRIES,
   printPdfBlob,
   isExpired,
-  getExpirationLabel,
-  getExpirationStatusColor
+  getExpirationLabel
 } from "../../lib/utils";
 import {
   downloadCapturedPDF,
@@ -77,6 +78,7 @@ import { downloadSinglePhoto, downloadFullRecord, bulkDownloadPhotos } from "../
 export default function Accreditations() {
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
+  const { canAccessEvent } = useAuth();
 
   const [events, setEvents] = useState([]);
   const [accreditations, setAccreditations] = useState([]);
@@ -111,67 +113,44 @@ export default function Accreditations() {
   const [deleting, setDeleting] = useState(false);
   const [bulkDownloading, setBulkDownloading] = useState(false);
   const [bulkEditing, setBulkEditing] = useState(false);
-  const [showBulkEditModal, setShowBulkEditModal] = useState(false);
-  const [bulkEditField, setBulkEditField] = useState("status");
-  const [bulkEditValue, setBulkEditValue] = useState("");
   const [loading, setLoading] = useState(true);
   const initializedRef = React.useRef(false);
   const [emailModal, setEmailModal] = useState({ open: false, accreditation: null });
   const [imageDownloadingId, setImageDownloadingId] = useState(null);
   const [clubs, setClubs] = useState([]);
-  const clubsCacheRef = useRef({});
-  const categoriesCacheRef = useRef({});
+  const [frontBackgroundUrl, setFrontBackgroundUrl] = useState("");
+  const [categoryDocuments, setCategoryDocuments] = useState({});
 
   useEffect(() => {
     const initializeData = async () => {
       setLoading(true);
       try {
-        const allEvents = await EventsAPI.getAll();
-        setEvents(allEvents);
+        const allEventsData = await EventsAPI.getAll();
+        const filteredEvents = allEventsData.filter(e => canAccessEvent(e.id));
+        setEvents(filteredEvents);
+        
         const eventParam = searchParams.get("event");
-        const targetEventId = eventParam || (allEvents.length > 0 ? allEvents[0].id : null);
+        const targetEventId = (eventParam && canAccessEvent(eventParam)) 
+          ? eventParam 
+          : (filteredEvents.length > 0 ? filteredEvents[0].id : null);
+        
         if (targetEventId) {
+          // Setting this will trigger the second useEffect
           setSelectedEvent(targetEventId);
-          const [accData, zoneData] = await Promise.all([
-            AccreditationsAPI.getByEventId(targetEventId),
-            ZonesAPI.getByEventId(targetEventId)
-          ]);
-          setAccreditations(accData);
-          setZones(zoneData);
-          try {
-            const { data: ecData } = await supabase
-              .from("event_categories")
-              .select("*, category:categories(*)")
-              .eq("event_id", targetEventId);
-            if (ecData) setEventCategories(ecData);
-          } catch (ecErr) {
-            console.warn("Event categories load failed (non-critical):", ecErr);
-          }
-          try {
-            if (clubsCacheRef.current[targetEventId]) {
-              setClubs(clubsCacheRef.current[targetEventId]);
-            } else {
-              const clubData = await GlobalSettingsAPI.getClubs(targetEventId);
-              clubsCacheRef.current[targetEventId] = clubData;
-              setClubs(clubData);
-            }
-          } catch { setClubs([]); }
+        } else {
+          setLoading(false);
         }
       } catch (error) {
         console.error("Failed to load initial data:", error);
-        const errorMessage = error.message?.includes("Access denied")
-          ? "Access denied. Please log in again."
-          : error.message?.includes("Network error") || error.message === "Failed to fetch"
-            ? "Network error. Please check your internet connection and refresh the page."
-            : "Failed to load data. Please refresh the page.";
-        toast.error(errorMessage);
-      } finally {
+        toast.error("Failed to load events list.");
         setLoading(false);
+      } finally {
         initializedRef.current = true;
       }
     };
     initializeData();
   }, []);
+
 
   useEffect(() => {
     if (!selectedEvent || !initializedRef.current) return;
@@ -196,14 +175,17 @@ export default function Accreditations() {
           console.warn("Event categories (non-critical):", ecErr);
         }
         try {
-          if (clubsCacheRef.current[selectedEvent]) {
-            setClubs(clubsCacheRef.current[selectedEvent]);
-          } else {
-            const clubData = await GlobalSettingsAPI.getClubs(selectedEvent);
-            clubsCacheRef.current[selectedEvent] = clubData;
-            setClubs(clubData);
-          }
+          const clubData = await GlobalSettingsAPI.getClubs(selectedEvent);
+          setClubs(clubData);
         } catch { setClubs([]); }
+        try {
+          const frontBg = await GlobalSettingsAPI.get(`event_${selectedEvent}_front_bg`);
+          setFrontBackgroundUrl(frontBg || "");
+        } catch { setFrontBackgroundUrl(""); }
+        try {
+          const catDocs = await GlobalSettingsAPI.get(`event_${selectedEvent}_category_documents`);
+          setCategoryDocuments(catDocs || {});
+        } catch { setCategoryDocuments({}); }
       } catch (error) {
         console.error("Failed to load event data:", error);
         toast.error("Failed to load accreditations. Please try again.");
@@ -240,19 +222,30 @@ export default function Accreditations() {
     });
   }, [accreditations, filters]);
 
+  const duplicateIds = useMemo(() => {
+    const ids = new Set();
+    const seen = new Map();
+    (accreditations || []).forEach(acc => {
+      if (!acc.firstName || !acc.lastName) return;
+      const key = `${acc.firstName.trim().toLowerCase()}|${acc.lastName.trim().toLowerCase()}|${acc.club?.trim().toLowerCase()}`;
+      if (seen.has(key)) {
+        ids.add(acc.id);
+        ids.add(seen.get(key));
+      } else {
+        seen.set(key, acc.id);
+      }
+    });
+    return ids;
+  }, [accreditations]);
+
   const currentEvent = events.find((e) => e.id === selectedEvent);
 
   const handleOpenEdit = useCallback(async (accreditation) => {
     setEditModal({ open: true, accreditation });
     setLoadingCategories(true);
     try {
-      if (categoriesCacheRef.current[accreditation.eventId]) {
-        setEventCategories(categoriesCacheRef.current[accreditation.eventId]);
-      } else {
-        const eventCats = await EventCategoriesAPI.getByEventId(accreditation.eventId);
-        categoriesCacheRef.current[accreditation.eventId] = eventCats;
-        setEventCategories(eventCats);
-      }
+      const eventCats = await EventCategoriesAPI.getByEventId(accreditation.eventId);
+      setEventCategories(eventCats);
     } catch (err) {
       console.error("Failed to load event categories:", err);
       setEventCategories([]);
@@ -372,9 +365,28 @@ export default function Accreditations() {
       const zoneCodeString = approveData.zoneCodes.join(",");
       await AccreditationsAPI.approve(accreditation.id, zoneCodeString, badgeNumber);
       await refreshAccreditations();
+
       if (approveData.sendEmail) {
-        // Generate PDF attachment for approved accreditation
-        const updatedAcc = { ...accreditation, badgeNumber, zoneCode: zoneCodeString, status: "approved" };
+        // Fetch the saved record from DB to get the real accreditation_id (ACC-2025-xxx)
+        // The QR code MUST encode the same value the verify page looks up by.
+        let freshAccreditation = null;
+        try {
+          freshAccreditation = await AccreditationsAPI.getById(accreditation.id);
+        } catch (fetchErr) {
+          console.warn("[Approve] Failed to re-fetch accreditation after approve:", fetchErr);
+        }
+
+        // Use the DB-driven accreditationId for the QR; fall back to local if fetch fails
+        const realAccreditationId = freshAccreditation?.accreditationId || accreditation.accreditationId;
+        const updatedAcc = {
+          ...accreditation,
+          ...(freshAccreditation || {}),
+          badgeNumber,
+          zoneCode: zoneCodeString,
+          status: "approved",
+          accreditationId: realAccreditationId
+        };
+
         let pdfData = null;
         try {
           pdfData = await generatePdfAttachment(updatedAcc, eventData, zones);
@@ -391,10 +403,11 @@ export default function Accreditations() {
             eventLocation: eventData?.location || "",
             eventDates: eventData ? `${eventData.startDate} - ${eventData.endDate}` : "",
             role: accreditation.role,
-            accreditationId: badgeNumber,
+            accreditationId: realAccreditationId || badgeNumber,
             badgeNumber: badgeNumber,
             zoneCode: zoneCodeString,
             reportingTimes: eventData?.reportingTimes || "",
+            eventId: accreditation.eventId,
             pdfBase64: pdfData?.pdfBase64 || null,
             pdfFileName: pdfData?.pdfFileName || null
           });
@@ -412,6 +425,7 @@ export default function Accreditations() {
         toast.success(`Accreditation ${isReApproval ? "re-approved" : "approved"}! (Email skipped)`);
       }
       setApproveModal({ open: false, accreditation: null });
+
     } catch (error) {
       console.error("Approval error:", error);
       toast.error("Failed to complete approval. Please try again.");
@@ -446,7 +460,8 @@ export default function Accreditations() {
             eventName: eventData?.name || "Event",
             role: accreditation.role,
             remarks: rejectData.remarks,
-            resubmitUrl: eventData?.slug ? `${window.location.origin}/register/${eventData.slug}` : null
+            resubmitUrl: eventData?.slug ? `${window.location.origin}/register/${eventData.slug}` : null,
+            eventId: accreditation.eventId
           });
         } catch (emailErr) {
           console.error("[Reject] Email send error:", emailErr);
@@ -517,10 +532,11 @@ export default function Accreditations() {
                 eventLocation: eventData?.location || "",
                 eventDates: eventData ? `${eventData.startDate} - ${eventData.endDate}` : "",
                 role: acc.role,
-                accreditationId: acc.badgeNumber || acc.accreditationId,
+                accreditationId: acc.accreditationId || acc.badgeNumber,
                 badgeNumber: acc.badgeNumber || "",
                 zoneCode: acc.zoneCode || zoneCodeString,
                 reportingTimes: eventData?.reportingTimes || "",
+                eventId: acc.eventId,
                 pdfBase64: pdfData?.pdfBase64 || null,
                 pdfFileName: pdfData?.pdfFileName || null
               });
@@ -554,15 +570,12 @@ export default function Accreditations() {
     }
   };
 
-  const handleBulkEdit = async () => {
-    if (!selectedRows || selectedRows.length === 0) return;
+  const handleBulkEdit = async (ids, updates) => {
+    if (!ids || ids.length === 0) return;
     setBulkEditing(true);
     try {
-      const updates = { [bulkEditField]: bulkEditValue };
-      await AccreditationsAPI.bulkUpdate(selectedRows, updates);
-      toast.success(`${selectedRows.length} accreditations updated successfully`);
-      setShowBulkEditModal(false);
-      setBulkEditValue("");
+      await AccreditationsAPI.bulkUpdate(ids, updates);
+      toast.success(`${ids.length} accreditations updated successfully`);
       setSelectedRows([]);
       await refreshAccreditations();
     } catch (error) {
@@ -663,192 +676,208 @@ export default function Accreditations() {
   const columns = [
     {
       key: "name",
-      header: "Participant",
+      header: "Name",
       sortable: true,
-      render: (row) => (
-        <div className="flex items-center gap-4">
-          <div className="relative group w-12 h-12 flex-shrink-0">
-            {row.photoUrl ? (
-              <img
-                src={row.photoUrl}
-                alt=""
-                className="w-full h-full rounded-2xl object-cover border border-white/10 group-hover:border-primary-500/50 transition-all duration-300 shadow-lg"
-              />
-            ) : (
-              <div className="w-full h-full rounded-2xl bg-white/5 border border-white/10 group-hover:bg-primary-500/10 group-hover:border-primary-500/20 flex items-center justify-center transition-all duration-300">
-                <span className="text-sm font-black text-primary-400 group-hover:scale-110 transition-transform">
-                  {row.firstName?.[0]}{row.lastName?.[0]}
+      className: "min-w-[250px]",
+      render: (_, row) => {
+        const isDuplicate = duplicateIds.has(row.id);
+        const age = row.role === 'Athlete' ? calculateAge(row.birthDate) : null;
+
+        return (
+          <div className="flex items-center gap-3 py-1">
+            <div className="relative group">
+              {row.photoUrl ? (
+                <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-border group-hover:border-primary-500 transition-colors">
+                  <img src={row.photoUrl} alt="" className="w-full h-full object-cover" />
+                </div>
+              ) : (
+                <div className="w-12 h-12 rounded-full bg-base-alt flex items-center justify-center text-muted border-2 border-border">
+                  <User className="w-6 h-6" />
+                </div>
+              )}
+              {isDuplicate && (
+                <div className="absolute -top-1 -right-1 bg-amber-500 rounded-full p-1 shadow-lg" title="Potential Duplicate">
+                  <AlertTriangle className="w-3 h-3 text-white" />
+                </div>
+              )}
+            </div>
+            <div className="flex flex-col min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-main text-lg truncate">
+                  {row.firstName} {row.lastName}
                 </span>
+                {age !== null && (
+                  <span className="text-xs text-muted font-bold px-1.5 py-0.5 bg-base-alt rounded-lg border border-border">
+                    AGE {age}
+                  </span>
+                )}
               </div>
-            )}
-            <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-slate-900 border-2 border-slate-900 flex items-center justify-center">
-              <div className={cn("w-1.5 h-1.5 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]", 
-                row.status === 'approved' ? 'bg-emerald-500' : 
-                row.status === 'pending' ? 'bg-amber-500' : 'bg-red-500')} 
-              />
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="text-[10px] font-black uppercase tracking-widest text-muted">{row.gender}</span>
+                {row.accreditationId && (
+                  <>
+                    <span className="text-border">•</span>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-primary-600 dark:text-primary-400">{row.id?.substring(0, 8)}</span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
-          <div className="flex flex-col">
-            <p className="font-black text-white group-hover:text-primary-400 transition-colors uppercase tracking-tight">
-              {row.firstName} {row.lastName}
-            </p>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{row.email}</span>
-            </div>
-          </div>
-        </div>
-      )
+        );
+      }
     },
     {
       key: "role",
-      header: "Function",
+      header: "Role",
       sortable: true,
-      render: (row) => (
-        <Badge variant={getRoleColor(row.role)}>
-          {row.role}
-        </Badge>
+      className: "w-[120px]",
+      render: (_, row) => (
+        <Badge className="w-32 shrink-0">{row.role}</Badge>
       )
     },
-    { 
-      key: "club", 
-      header: "Organization", 
-      sortable: true,
-      render: (row) => (
-        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-          {row.club || "Independant"}
-        </span>
-      )
-    },
+    { key: "club", header: "Club", sortable: true, className: "min-w-[200px]" },
     {
       key: "nationality",
-      header: "Region",
+      header: "Country",
       sortable: true,
-      render: (row) => (
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-black text-slate-300 uppercase italic tracking-tighter">{row.nationality}</span>
-        </div>
-      )
+      className: "w-[100px]",
+      render: (_, row) => <span className="text-lg">{row.nationality}</span>
     },
     {
       key: "status",
-      header: "Security Status",
+      header: "Status",
       sortable: true,
-      render: (row) => (
-        <div className="flex items-center gap-2">
-          {row.status === 'approved' && <CheckCircle className="w-3 h-3 text-emerald-500" />}
-          {row.status === 'pending' && <Clock className="w-3 h-3 text-amber-500" />}
-          {row.status === 'rejected' && <XCircle className="w-3 h-3 text-red-500" />}
-          <Badge variant={getStatusColor(row.status)}>{row.status}</Badge>
+      className: "w-[140px]",
+      render: (_, row) => (
+        <div className="flex flex-col gap-1.5">
+          <Badge
+            variant={
+              row.status === "approved"
+                ? "success"
+                : row.status === "rejected"
+                ? "danger"
+                : "warning"
+            }
+            className="w-24 justify-center"
+          >
+            {row.status?.toUpperCase() || "PENDING"}
+          </Badge>
+          {(row.paymentAmount > 0 || !!row.stripeSessionId) && row.paymentStatus === 'paid' && (
+            <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-bold uppercase tracking-wider bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20 w-fit">
+              <Check className="w-2.5 h-2.5" />
+              Paid
+            </div>
+          )}
         </div>
       )
     },
     {
       key: "expiresAt",
-      header: "Validity",
+      header: "Expiration",
       sortable: true,
-      render: (row) => {
+      className: "w-[140px]",
+      render: (_, row) => {
         if (row.status !== "approved") {
-          return <span className="text-slate-700 font-black tracking-widest text-[10px]">VAIDATION REQ.</span>;
+          return <span className="text-sm text-muted font-medium italic">—</span>;
         }
         const expired = isExpired(row.expiresAt);
         const label = getExpirationLabel(row.expiresAt);
-        const colorClass = getExpirationStatusColor(row.expiresAt);
         return (
-          <Badge variant={colorClass}>
-            {expired ? "VOID" : label}
+          <Badge className="w-24 shrink-0 whitespace-nowrap">
+            {expired ? "Expired" : label}
           </Badge>
         );
       }
     },
     {
       key: "createdAt",
-      header: "Timestamp",
+      header: "Submitted",
       sortable: true,
-      render: (row) => (
-        <div className="flex flex-col">
-          <span className="text-xs font-black text-slate-500 tracking-tighter uppercase">{formatDate(row.createdAt)}</span>
-        </div>
+      className: "w-[140px]",
+      render: (_, row) => (
+        <span className="text-sm text-slate-400 font-medium">{formatDate(row.createdAt)}</span>
       )
     },
     {
       key: "actions",
       header: "Actions",
-      render: (row) => (
-        <div className="flex items-center gap-2">
+      className: "w-[220px]",
+      render: (_, row) => (
+        <div className="flex items-center flex-wrap gap-1.5">
           <button
             onClick={(e) => { e.stopPropagation(); setViewModal({ open: true, accreditation: row }); }}
-            className="p-2 rounded-lg hover:bg-primary-800/30 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-primary-800/30 transition-colors"
             title="View Details"
           >
-            <Eye className="w-4 h-4 text-white" />
+            <Eye className="w-3.5 h-3.5 text-white" />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); handleOpenEdit(row); }}
-            className="p-2 rounded-lg hover:bg-blue-500/20 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-blue-500/20 transition-colors"
             title="Edit"
           >
-            <Edit className="w-4 h-4 text-blue-300" />
+            <Edit className="w-3.5 h-3.5 text-blue-300" />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); handleApprove(row); }}
-            className="p-2 rounded-lg hover:bg-emerald-500/20 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-emerald-500/20 transition-colors"
             title={row.status === "approved" ? "Re-approve" : "Approve"}
           >
-            <CheckCircle className="w-4 h-4 text-emerald-300" />
+            <CheckCircle className="w-3.5 h-3.5 text-emerald-300" />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); handleReject(row); }}
-            className="p-2 rounded-lg hover:bg-red-500/20 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-red-500/20 transition-colors"
             title={row.status === "rejected" ? "Already rejected" : "Reject"}
           >
-            <XCircle className="w-4 h-4 text-red-300" />
+            <XCircle className="w-3.5 h-3.5 text-red-300" />
           </button>
           {row.status === "approved" && (
             <>
               <button
                 onClick={(e) => { e.stopPropagation(); handlePreviewPDF(row); }}
-                className="p-2 rounded-lg hover:bg-primary-500/20 transition-colors"
+                className="p-1.5 rounded-lg hover:bg-primary-500/20 transition-colors"
                 title="Preview and Download PDF"
               >
-                <Eye className="w-4 h-4 text-cyan-300" />
+                <Eye className="w-3.5 h-3.5 text-cyan-300" />
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); setBadgeGeneratorModal({ open: true, accreditation: row }); }}
-                className="p-2 rounded-lg hover:bg-emerald-500/20 transition-colors"
+                className="p-1.5 rounded-lg hover:bg-emerald-500/20 transition-colors"
                 title="Generate Simple Badge with QR"
               >
-                <Download className="w-4 h-4 text-emerald-300" />
+                <Download className="w-3.5 h-3.5 text-emerald-300" />
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); handleOpenShareLink(row); }}
-                className="p-2 rounded-lg hover:bg-cyan-500/20 transition-colors"
+                className="p-1.5 rounded-lg hover:bg-cyan-500/20 transition-colors"
                 title="Share Link"
               >
-                <Link className="w-4 h-4 text-cyan-300" />
+                <Link className="w-3.5 h-3.5 text-cyan-300" />
               </button>
             </>
           )}
           <button
-            onClick={(e) => { e.stopPropagation(); handleDownloadPhoto(row); }}
-            className="p-2 rounded-lg hover:bg-orange-500/20 transition-colors"
-            title="Download Uploaded Photo"
-            disabled={!row.photoUrl || imageDownloadingId === row.id}
+            onClick={(e) => { e.stopPropagation(); handleDownloadAllDocs(row); }}
+            className="p-1.5 rounded-lg hover:bg-orange-500/20 transition-colors"
+            title="Download All Documents"
+            disabled={(!row.photoUrl && !row.idDocumentUrl) || imageDownloadingId === row.id}
           >
-            <ImageIcon className={`w-4 h-4 ${row.photoUrl ? "text-orange-300" : "text-slate-600"}`} />
+            <Files className={`w-3.5 h-3.5 ${ (row.photoUrl || row.idDocumentUrl) ? "text-orange-300" : "text-slate-600"}`} />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); setEmailModal({ open: true, accreditation: row }); }}
-            className="p-2 rounded-lg hover:bg-violet-500/20 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-violet-500/20 transition-colors"
             title="Send Email"
           >
-            <Mail className="w-4 h-4 text-violet-300" />
+            <Mail className="w-3.5 h-3.5 text-violet-300" />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); handleOpenDeleteConfirm(row); }}
-            className="p-2 rounded-lg hover:bg-red-500/20 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-red-500/20 transition-colors"
             title="Delete"
           >
-            <Trash2 className="w-4 h-4 text-red-300" />
+            <Trash2 className="w-3.5 h-3.5 text-red-300" />
           </button>
         </div>
       )
@@ -860,13 +889,14 @@ export default function Accreditations() {
       {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white font-serif">Accreditations</h1>
+          <h1 className="text-3xl font-bold text-white">Accreditations</h1>
           <p className="text-lg text-slate-400 mt-1 font-extralight">Manage participant accreditations</p>
         </div>
-        <Button variant="primary" icon={Plus}>
+        <Button variant="primary" icon={Plus} onClick={() => setEditModal({ open: true, accreditation: null })}>
           Add Accreditation
         </Button>
       </div>
+
       <Card>
         <CardContent className="space-y-4">
           {/* Filters */}
@@ -911,7 +941,7 @@ export default function Accreditations() {
                   placeholder="All Roles"
                 />
               </div>
-              <div className="w-[250px]">
+              <div className="flex-1 min-w-[280px]">
                 <SearchableSelect
                   label="Club"
                   value={filters.club}
@@ -925,7 +955,7 @@ export default function Accreditations() {
                   placeholder="Select/Search club..."
                 />
               </div>
-              <div className="min-w-[150px]">
+              <div className="min-w-[120px]">
                 <Select
                   label="Country"
                   value={filters.nationality}
@@ -954,26 +984,14 @@ export default function Accreditations() {
             clubs={clubs}
             eventCategories={eventCategories}
             onClearSelection={setSelectedRows}
-            onOpenBulkEdit={() => setShowBulkEditModal(true)}
+            onBulkEdit={handleBulkEdit}
             onBulkApprove={handleBulkApprove}
           />
 
           {loading ? (
-            <div className="space-y-4">
-              <div className="flex items-center gap-4 mb-6">
-                <Skeleton className="h-10 w-64" />
-                <Skeleton className="h-10 w-32 ml-auto" />
-              </div>
-              {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="flex gap-4 p-4 glass-panel rounded-2xl">
-                  <Skeleton variant="circle" className="w-12 h-12" />
-                  <div className="flex-1 space-y-2">
-                    <Skeleton className="h-4 w-1/4" />
-                    <Skeleton className="h-3 w-1/2" />
-                  </div>
-                  <Skeleton className="h-8 w-24" />
-                </div>
-              ))}
+            <div className="flex flex-col items-center justify-center py-16">
+              <Loader2 className="w-12 h-12 text-primary-500 animate-spin mb-4" />
+              <p className="text-lg text-slate-400">Loading accreditations...</p>
             </div>
           ) : !selectedEvent ? (
             <EmptyState
@@ -997,6 +1015,7 @@ export default function Accreditations() {
               selectedRows={selectedRows}
               onSelectRows={setSelectedRows}
               onRowClick={(row) => setViewModal({ open: true, accreditation: row })}
+              rowClassName={(row) => duplicateIds.has(row.id) ? "bg-amber-900/10 hover:bg-amber-900/20" : ""}
             />
           )}
         </CardContent>
@@ -1012,10 +1031,15 @@ export default function Accreditations() {
         clubs={clubs}
         saving={editSaving}
         currentEvent={currentEvent}
+        categoryDocuments={categoryDocuments}
         onSave={(data) => {
+
           const saveEdit = async () => {
             setEditSaving(true);
             try {
+              const { data: { session } } = await supabase.auth.getSession();
+              const adminUserId = session?.user?.id;
+
               const updatePayload = {
                 firstName: data.firstName,
                 lastName: data.lastName,
@@ -1026,32 +1050,47 @@ export default function Accreditations() {
                 role: data.role,
                 email: data.email,
                 photoUrl: data.photoUrl,
+                idDocumentUrl: data.idDocumentUrl,
+                eidUrl: data.eidUrl,
+                medicalUrl: data.medicalUrl,
+                customMessage: data.customMessage,
+                badgeColor: data.badgeColor,
                 zoneCode: data.zoneCode || (data.zoneCodes ? data.zoneCodes.join(",") : "")
               };
               updatePayload.expiresAt = data.expiresAt !== undefined ? data.expiresAt : null;
-              if (data.roleChanged && editModal.accreditation.status === "approved") {
-                const newRole = data.role;
-                const prefix = ROLE_BADGE_PREFIXES[newRole] || newRole.substring(0, 3).toUpperCase() || "GEN";
-                const { count: existingCount } = await supabase
-                  .from("accreditations")
-                  .select("id", { count: "exact", head: true })
-                  .eq("event_id", editModal.accreditation.eventId)
-                  .eq("role", newRole)
-                  .eq("status", "approved")
-                  .neq("id", editModal.accreditation.id);
-                const newBadgeNumber = `${prefix}-${String((existingCount || 0) + 1).padStart(3, "0")}`;
-                updatePayload.badgeNumber = newBadgeNumber;
-                await AccreditationsAPI.update(editModal.accreditation.id, updatePayload);
-                toast.success(`Accreditation updated! New badge number: ${newBadgeNumber}`);
+
+              if (editModal.accreditation) {
+                if (data.roleChanged && editModal.accreditation.status === "approved") {
+                  const newRole = data.role;
+                  const prefix = ROLE_BADGE_PREFIXES[newRole] || newRole.substring(0, 3).toUpperCase() || "GEN";
+                  const { count: existingCount } = await supabase
+                    .from("accreditations")
+                    .select("id", { count: "exact", head: true })
+                    .eq("event_id", editModal.accreditation.eventId)
+                    .eq("role", newRole)
+                    .eq("status", "approved")
+                    .neq("id", editModal.accreditation.id);
+                  const newBadgeNumber = `${prefix}-${String((existingCount || 0) + 1).padStart(3, "0")}`;
+                  updatePayload.badgeNumber = newBadgeNumber;
+                  await AccreditationsAPI.adminEdit(editModal.accreditation.id, updatePayload, adminUserId);
+                  toast.success(`Accreditation updated! New badge number: ${newBadgeNumber}`);
+                } else {
+                  await AccreditationsAPI.adminEdit(editModal.accreditation.id, updatePayload, adminUserId);
+                  toast.success("Accreditation updated successfully");
+                }
               } else {
-                await AccreditationsAPI.update(editModal.accreditation.id, updatePayload);
-                toast.success("Accreditation updated successfully");
+                // Add new
+                updatePayload.eventId = selectedEvent;
+                updatePayload.status = "approved"; // Default to approved when added by admin
+                await AccreditationsAPI.adminAdd(updatePayload, adminUserId);
+                toast.success("New accreditation added successfully!");
               }
+
               setEditModal({ open: false, accreditation: null });
-              await refreshAccreditations();
+              if (selectedEvent) await refreshAccreditations();
             } catch (error) {
-              console.error("Edit save error:", error);
-              toast.error("Failed to save changes: " + (error.message || "Unknown error"));
+              console.error("Save error:", error);
+              toast.error("Failed to save: " + (error.message || "Unknown error"));
             } finally {
               setEditSaving(false);
             }
@@ -1074,11 +1113,11 @@ export default function Accreditations() {
                 <img
                   src={viewModal.accreditation.photoUrl}
                   alt=""
-                  className="w-32 h-32 rounded-2xl object-cover border-2 border-primary-500/30 shadow-xl"
+                  className="w-32 h-40 rounded-lg object-cover border-2 border-primary-500/30"
                 />
               ) : (
-                <div className="w-32 h-32 rounded-2xl bg-gradient-to-br from-primary-600 to-ocean-600 flex items-center justify-center shadow-xl">
-                  <span className="text-4xl font-black text-white">
+                <div className="w-32 h-40 rounded-lg bg-gradient-to-br from-primary-600 to-ocean-600 flex items-center justify-center">
+                  <span className="text-3xl font-bold text-white">
                     {viewModal.accreditation.firstName?.[0]}
                     {viewModal.accreditation.lastName?.[0]}
                   </span>
@@ -1089,10 +1128,10 @@ export default function Accreditations() {
                   {viewModal.accreditation.firstName} {viewModal.accreditation.lastName}
                 </h3>
                 <div className="flex items-center gap-2 mt-2">
-                  <Badge variant={getRoleColor(viewModal.accreditation.role)}>
+                  <Badge>
                     {viewModal.accreditation.role}
                   </Badge>
-                  <Badge variant={getStatusColor(viewModal.accreditation.status)}>
+                  <Badge variant={viewModal.accreditation.status === "approved" ? "success" : viewModal.accreditation.status === "rejected" ? "danger" : "warning"}>
                     {viewModal.accreditation.status}
                   </Badge>
                 </div>
@@ -1127,7 +1166,7 @@ export default function Accreditations() {
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-lg font-semibold text-emerald-400">Approval Details</h4>
                   {viewModal.accreditation.expiresAt && (
-                    <Badge className={getExpirationStatusColor(viewModal.accreditation.expiresAt)}>
+                    <Badge className="whitespace-nowrap">
                       {getExpirationLabel(viewModal.accreditation.expiresAt)}
                     </Badge>
                   )}
@@ -1268,89 +1307,217 @@ export default function Accreditations() {
         title="Approve Accreditation"
       >
         <div className="p-6 space-y-4">
-          <p className="text-lg text-slate-300">
-            Approve accreditation for{" "}
-            <span className="font-semibold text-white">
-              {approveModal.accreditation?.firstName} {approveModal.accreditation?.lastName}
-            </span>
-          </p>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="block text-lg font-medium text-slate-300">
-                Zone Access <span className="text-red-400">*</span>
-              </label>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setApproveData((prev) => ({ ...prev, zoneCodes: zones.map((z) => z.code) }))}
-                  className="text-lg text-cyan-400 hover:text-cyan-300"
-                >
-                  Select All
-                </button>
-                <span className="text-slate-600">|</span>
-                <button
-                  type="button"
-                  onClick={() => setApproveData((prev) => ({ ...prev, zoneCodes: [] }))}
-                  className="text-lg text-slate-400 hover:text-slate-300"
-                >
-                  Clear
-                </button>
-              </div>
+          {/* Profile Header */}
+          <div className="flex items-center gap-4 bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+            <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-cyan-500/30 flex-shrink-0 bg-slate-900">
+              {approveModal.accreditation?.photoUrl ? (
+                <img src={approveModal.accreditation.photoUrl} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-slate-600">
+                  <User className="w-10 h-10" />
+                </div>
+              )}
             </div>
-            {zones && zones.length > 0 ? (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-60 overflow-y-auto">
-                {zones.map((zone) => {
-                  const isSelected = approveData.zoneCodes.includes(zone.code);
-                  return (
-                    <button
-                      key={zone.id}
-                      type="button"
-                      onClick={() => {
-                        setApproveData((prev) => {
-                          const current = prev.zoneCodes || [];
-                          if (current.includes(zone.code)) {
-                            return { ...prev, zoneCodes: current.filter((z) => z !== zone.code) };
-                          } else {
-                            return { ...prev, zoneCodes: [...current, zone.code] };
-                          }
-                        });
-                      }}
-                      className={`p-3 rounded-lg border-2 transition-all duration-200 text-left ${
-                        isSelected
-                          ? "border-primary-500 bg-primary-500/20"
-                          : "border-slate-700 hover:border-slate-600 bg-slate-800/50"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <div
-                          className="w-8 h-8 rounded-md flex items-center justify-center text-white font-bold text-lg flex-shrink-0"
-                          style={{ backgroundColor: zone.color || "#2563eb" }}
-                        >
-                          {zone.code}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className={`text-lg font-medium truncate ${isSelected ? "text-white" : "text-slate-300"}`}>
-                            {zone.name}
-                          </p>
-                        </div>
-                        {isSelected && (
-                          <Check className="w-4 h-4 text-primary-400 flex-shrink-0" />
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4">
-                <p className="text-lg text-amber-400">No zones defined for this event.</p>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-xl font-bold text-white truncate">
+                {approveModal.accreditation?.firstName} {approveModal.accreditation?.lastName}
+              </h3>
+              <p className="text-lg text-cyan-400 font-medium">
+                {approveModal.accreditation?.role} • {approveModal.accreditation?.nationality}
+              </p>
+              <p className="text-sm text-slate-400 truncate mt-0.5">
+                {approveModal.accreditation?.club}
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {/* Participating Sports */}
+            {approveModal.accreditation?.selectedSports && approveModal.accreditation.selectedSports.length > 0 && (
+              <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+                <h4 className="text-lg font-medium text-white mb-3 flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-cyan-400" />
+                  Participating Sports
+                </h4>
+                <div className="flex flex-wrap gap-2">
+                  {approveModal.accreditation.selectedSports.map(sport => (
+                    <span key={sport} className="px-3 py-1 bg-cyan-500/20 text-cyan-400 text-sm font-bold rounded-full border border-cyan-500/30">
+                      {sport}
+                    </span>
+                  ))}
+                </div>
               </div>
             )}
-            <p className="text-lg text-slate-500">
-              {approveData.zoneCodes?.length || 0} zone(s) selected
-            </p>
+            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+              <h4 className="text-lg font-medium text-white mb-3 flex items-center gap-2">
+                <FileText className="w-4 h-4 text-cyan-400" />
+                Review Documents
+              </h4>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-2">
+                {(() => {
+                  const currentEventObj = events.find(e => e.id === selectedEvent);
+                  const role = approveModal.accreditation?.role;
+                  const catData = eventCategories.find(c => (c.category?.name || c.name) === role);
+                  const catId = catData?.category_id || role;
+                  const categorySpecificDocs = categoryDocuments[catId];
+                  
+                  let docs = categorySpecificDocs || [...(currentEventObj?.requiredDocuments || [])];
+                  
+                  // Ensure picture and passport are always in the review list if the URLs exist
+                  if (approveModal.accreditation?.photoUrl && !docs.find(d => (d.id === 'picture' || d === 'picture'))) {
+                    docs = [{ id: 'picture', label: 'Photo' }, ...docs];
+                  }
+                  if (approveModal.accreditation?.idDocumentUrl && !docs.find(d => (d.id === 'passport' || d === 'passport'))) {
+                    docs = [...docs, { id: 'passport', label: 'ID / Passport' }];
+                  }
+                  
+                  // If still empty, use defaults
+                  if (docs.length === 0) {
+                    docs = [
+                      { id: "picture", label: "Photo" },
+                      { id: "passport", label: "Passport" }
+                    ];
+                  }
 
-            {/* Email Notification Toggle */}
+                  return docs.map(doc => {
+                    const docId = typeof doc === 'string' ? doc : doc.id;
+                    const docLabel = (typeof doc === 'object' ? doc.label : null) || docId;
+                    
+                    // Skip picture/photo as they are handled elsewhere or showing at top
+                    if (
+                      docId.toLowerCase() === 'picture' || 
+                      docId.toLowerCase() === 'photo' || 
+                      docLabel.toLowerCase() === 'picture' || 
+                      docLabel.toLowerCase() === 'photo'
+                    ) return null;
+
+                    const eventDoc = (currentEventObj?.requiredDocuments || []).find(d => d.id === docId);
+                    const label = (typeof doc === 'object' ? doc.label : null) || eventDoc?.label || (docId ? docId.charAt(0).toUpperCase() + docId.slice(1) : "Document");
+                    
+                    const isPassport = docId === 'passport';
+                    const isPicture = docId === 'picture';
+                    const url = isPicture 
+                      ? approveModal.accreditation?.photoUrl 
+                      : isPassport 
+                        ? approveModal.accreditation?.idDocumentUrl 
+                        : approveModal.accreditation?.documents?.[docId];
+
+                    return (
+                      <div key={docId} className="space-y-1">
+                        <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest truncate">{label}</p>
+                        {url ? (
+                          <a href={url} target="_blank" rel="noopener noreferrer" className="block relative group">
+                            <div className="w-full h-24 rounded-lg overflow-hidden border border-slate-700 bg-slate-900 group-hover:border-primary-500 transition-colors flex items-center justify-center">
+                              {url.toLowerCase().endsWith('.pdf') ? (
+                                <FileText className="w-8 h-8 text-slate-500" />
+                              ) : (
+                                <img src={url} alt={label} className="w-full h-full object-cover" />
+                              )}
+                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                <Eye className="w-4 h-4 text-white" />
+                              </div>
+                            </div>
+                          </a>
+                        ) : (
+                          <div className="w-full h-24 rounded-lg border border-dashed border-slate-700 flex items-center justify-center text-slate-600 text-[10px] font-bold">
+                            EMPTY
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+
+                })()}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={Download}
+                onClick={() => handleDownloadAllDocs(approveModal.accreditation)}
+                className="w-full mt-3 text-lg"
+              >
+                Download All Documents
+              </Button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="block text-lg font-medium text-slate-300">
+                  Zone Access <span className="text-red-400">*</span>
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setApproveData((prev) => ({ ...prev, zoneCodes: zones.map((z) => z.code) }))}
+                    className="text-lg text-cyan-400 hover:text-cyan-300"
+                  >
+                    Select All
+                  </button>
+                  <span className="text-slate-600">|</span>
+                  <button
+                    type="button"
+                    onClick={() => setApproveData((prev) => ({ ...prev, zoneCodes: [] }))}
+                    className="text-lg text-slate-400 hover:text-slate-300"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              {zones && zones.length > 0 ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-60 overflow-y-auto">
+                  {zones.map((zone) => {
+                    const isSelected = (approveData.zoneCodes || []).includes(zone.code);
+                    return (
+                      <button
+                        key={zone.id}
+                        type="button"
+                        onClick={() => {
+                          setApproveData((prev) => {
+                            const current = prev.zoneCodes || [];
+                            if (current.includes(zone.code)) {
+                              return { ...prev, zoneCodes: current.filter((z) => z !== zone.code) };
+                            } else {
+                              return { ...prev, zoneCodes: [...current, zone.code] };
+                            }
+                          });
+                        }}
+                        className={`p-3 rounded-lg border-2 transition-all duration-200 text-left ${
+                          isSelected
+                            ? "border-primary-500 bg-primary-500/20"
+                            : "border-slate-700 hover:border-slate-600 bg-slate-800/50"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="w-8 h-8 rounded-md flex items-center justify-center text-white font-bold text-lg flex-shrink-0"
+                            style={{ backgroundColor: zone.color || "#2563eb" }}
+                          >
+                            {zone.code}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-lg font-medium truncate ${isSelected ? "text-white" : "text-slate-300"}`}>
+                              {zone.name}
+                            </p>
+                          </div>
+                          {isSelected && (
+                            <Check className="w-4 h-4 text-primary-400 flex-shrink-0" />
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4">
+                  <p className="text-lg text-amber-400">No zones defined for this event.</p>
+                </div>
+              )}
+              <p className="text-lg text-slate-500">
+                {approveData.zoneCodes?.length || 0} zone(s) selected
+              </p>
+            </div>
+
             <div className="pt-2">
               <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg bg-slate-800/50 border border-slate-700 hover:bg-slate-800 transition-colors">
                 <input
@@ -1401,6 +1568,48 @@ export default function Accreditations() {
               {rejectModal.accreditation?.firstName} {rejectModal.accreditation?.lastName}
             </span>
           </p>
+
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-3">
+            <h4 className="text-lg font-medium text-white flex items-center gap-2">
+              <FileText className="w-4 h-4 text-cyan-400" />
+              Attached Documents
+            </h4>
+            <div className="flex gap-4">
+              {rejectModal.accreditation?.photoUrl && (
+                <a href={rejectModal.accreditation.photoUrl} target="_blank" rel="noopener noreferrer" className="w-16 h-16 rounded overflow-hidden border border-slate-700 hover:border-primary-500 transition-colors">
+                  <img src={rejectModal.accreditation.photoUrl} alt="Photo" className="w-full h-full object-cover" />
+                </a>
+              )}
+              {rejectModal.accreditation?.idDocumentUrl && (
+                <a href={rejectModal.accreditation.idDocumentUrl} target="_blank" rel="noopener noreferrer" className="w-16 h-16 rounded overflow-hidden border border-slate-700 hover:border-primary-500 transition-colors flex items-center justify-center bg-slate-900">
+                  {rejectModal.accreditation.idDocumentUrl.toLowerCase().endsWith('.pdf') ? <FileText className="w-8 h-8 text-slate-500" /> : <img src={rejectModal.accreditation.idDocumentUrl} alt="ID" className="w-full h-full object-cover" />}
+                </a>
+              )}
+              {rejectModal.accreditation?.eidUrl && (
+                <a href={rejectModal.accreditation.eidUrl} target="_blank" rel="noopener noreferrer" className="w-16 h-16 rounded overflow-hidden border border-slate-700 hover:border-primary-500 transition-colors flex items-center justify-center bg-slate-900">
+                  {rejectModal.accreditation.eidUrl.toLowerCase().endsWith('.pdf') ? <FileText className="w-8 h-8 text-slate-500" /> : <img src={rejectModal.accreditation.eidUrl} alt="EID" className="w-full h-full object-cover" />}
+                </a>
+              )}
+              {rejectModal.accreditation?.medicalUrl && (
+                <a href={rejectModal.accreditation.medicalUrl} target="_blank" rel="noopener noreferrer" className="w-16 h-16 rounded overflow-hidden border border-slate-700 hover:border-primary-500 transition-colors flex items-center justify-center bg-slate-900">
+                  {rejectModal.accreditation.medicalUrl.toLowerCase().endsWith('.pdf') ? <FileText className="w-8 h-8 text-slate-500" /> : <img src={rejectModal.accreditation.medicalUrl} alt="Med" className="w-full h-full object-cover" />}
+                </a>
+              )}
+              {(!rejectModal.accreditation?.photoUrl && !rejectModal.accreditation?.idDocumentUrl && !rejectModal.accreditation?.eidUrl && !rejectModal.accreditation?.medicalUrl) && (
+                <p className="text-sm text-slate-500">No documents attached</p>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={Download}
+              onClick={() => handleDownloadAllDocs(rejectModal.accreditation)}
+              className="mt-1"
+            >
+              Download All
+            </Button>
+          </div>
+
           <div>
             <label className="block text-lg font-medium text-slate-300 mb-1.5">
               Rejection Remarks <span className="text-red-400">*</span>
@@ -1597,6 +1806,7 @@ export default function Accreditations() {
                     event={events.find(e => e.id === pdfPreviewModal.accreditation.eventId)}
                     zones={zones}
                     eventCategories={eventCategories}
+                    frontBackgroundUrl={frontBackgroundUrl}
                   />
                 </div>
 
@@ -1703,10 +1913,67 @@ export default function Accreditations() {
             </span>
           </p>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-4">
+            {/* Review Documents Section */}
+            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+              <h4 className="text-lg font-medium text-white mb-3 flex items-center gap-2">
+                <FileText className="w-4 h-4 text-cyan-400" />
+                Review Documents
+              </h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <p className="text-sm text-slate-400">Profile Photo</p>
+                  {approveModal.accreditation?.photoUrl ? (
+                    <a href={approveModal.accreditation.photoUrl} target="_blank" rel="noopener noreferrer" className="block relative group">
+                      <div className="w-full h-32 rounded-lg overflow-hidden border border-slate-700 bg-slate-900 group-hover:border-primary-500 transition-colors">
+                        <img src={approveModal.accreditation.photoUrl} alt="Photo" className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                          <Eye className="w-6 h-6 text-white" />
+                        </div>
+                      </div>
+                    </a>
+                  ) : (
+                    <div className="w-full h-32 rounded-lg border border-dashed border-slate-700 flex items-center justify-center text-slate-600">
+                      No Photo
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <p className="text-sm text-slate-400">ID / Passport</p>
+                  {approveModal.accreditation?.idDocumentUrl ? (
+                    <a href={approveModal.accreditation.idDocumentUrl} target="_blank" rel="noopener noreferrer" className="block relative group">
+                      <div className="w-full h-32 rounded-lg overflow-hidden border border-slate-700 bg-slate-900 group-hover:border-primary-500 transition-colors flex items-center justify-center">
+                        {approveModal.accreditation.idDocumentUrl.toLowerCase().endsWith('.pdf') ? (
+                          <FileText className="w-12 h-12 text-slate-500" />
+                        ) : (
+                          <img src={approveModal.accreditation.idDocumentUrl} alt="ID" className="w-full h-full object-cover" />
+                        )}
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                          <Eye className="w-6 h-6 text-white" />
+                        </div>
+                      </div>
+                    </a>
+                  ) : (
+                    <div className="w-full h-32 rounded-lg border border-dashed border-slate-700 flex items-center justify-center text-slate-600">
+                      No ID Doc
+                    </div>
+                  )}
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={Download}
+                onClick={() => handleDownloadAllDocs(approveModal.accreditation)}
+                className="w-full mt-3 text-lg"
+              >
+                Download All Documents
+              </Button>
+            </div>
+
             <div>
               <label className="block text-lg font-medium text-slate-300 mb-1.5">
-                Expiry Date <span className="text-red-400">*</span>
+                Grant Zone Access <span className="text-red-400">*</span>
               </label>
               <input
                 type="date"
@@ -1804,138 +2071,15 @@ export default function Accreditations() {
         </div>
       </Modal>
 
-      {/* Bulk Edit Modal */}
-      <Modal 
-        isOpen={showBulkEditModal} 
-        onClose={() => setShowBulkEditModal(false)} 
-        title="Bulk Edit Accreditations"
-      >
-        <div className="p-6 space-y-4">
-          <p className="text-lg text-slate-300">
-            Edit <span className="font-semibold text-white">{selectedRows.length}</span> selected accreditations
-          </p>
-
-          <div className="space-y-4 py-2">
-            <div>
-              <label className="block text-lg font-medium text-slate-300 mb-2">
-                Field to Edit
-              </label>
-              <Select
-                value={bulkEditField}
-                onChange={(e) => {
-                  setBulkEditField(e.target.value);
-                  setBulkEditValue("");
-                }}
-                options={[
-                  { value: "status", label: "Security Status" },
-                  { value: "role", label: "Function/Role" },
-                  { value: "category", label: "Special Privilege" },
-                  { value: "club", label: "Organization" },
-                  { value: "gender", label: "Gender" },
-                  { value: "nationality", label: "Region/Country" },
-                  { value: "zoneCode", label: "Zone Access" },
-                ]}
-              />
-            </div>
-
-            <div>
-              <label className="block text-lg font-medium text-slate-300 mb-2">
-                New Value
-              </label>
-              {bulkEditField === "status" ? (
-                <Select
-                  value={bulkEditValue}
-                  onChange={(e) => setBulkEditValue(e.target.value)}
-                  options={[
-                    { value: "pending", label: "Pending" },
-                    { value: "approved", label: "Approved" },
-                    { value: "rejected", label: "Rejected" },
-                  ]}
-                  placeholder="Select new status..."
-                />
-              ) : bulkEditField === "club" ? (
-                <SearchableSelect
-                  value={bulkEditValue}
-                  onChange={(e) => setBulkEditValue(e.target.value)}
-                  options={[
-                    ...new Set([
-                      ...(clubs?.map(c => typeof c === 'string' ? c : (c?.full || c?.short)).filter(Boolean) || []),
-                      ...(accreditations?.map(a => a.club).filter(Boolean) || [])
-                    ])
-                  ].sort().map(club => ({ value: club, label: club }))}
-                  placeholder="Select or Search organization..."
-                />
-              ) : bulkEditField === "role" || bulkEditField === "category" ? (
-                <Select
-                  value={bulkEditValue}
-                  onChange={(e) => setBulkEditValue(e.target.value)}
-                  options={
-                    eventCategories && eventCategories.length > 0
-                      ? eventCategories.map((cat) => {
-                          const categoryData = cat.category || cat;
-                          const name = categoryData?.name || cat?.name;
-                          return name ? { value: name, label: name } : null;
-                        }).filter(Boolean)
-                      : ROLES.map((r) => ({ value: r, label: r }))
-                  }
-                  placeholder={`Select new ${bulkEditField}...`}
-                />
-              ) : bulkEditField === "gender" ? (
-                <Select
-                  value={bulkEditValue}
-                  onChange={(e) => setBulkEditValue(e.target.value)}
-                  options={[
-                    { value: "Male", label: "Male" },
-                    { value: "Female", label: "Female" },
-                  ]}
-                  placeholder="Select gender..."
-                />
-              ) : bulkEditField === "nationality" ? (
-                <Select
-                  value={bulkEditValue}
-                  onChange={(e) => setBulkEditValue(e.target.value)}
-                  options={COUNTRIES.map((c) => ({ value: c.code, label: c.name }))}
-                  placeholder="Select country/region..."
-                />
-              ) : bulkEditField === "zoneCode" ? (
-                <Select
-                  value={bulkEditValue}
-                  onChange={(e) => setBulkEditValue(e.target.value)}
-                  options={zones.map(z => ({ value: z.code, label: `${z.code} - ${z.name}` }))}
-                  placeholder="Select zone access..."
-                />
-              ) : (
-                <input
-                  type="text"
-                  value={bulkEditValue}
-                  onChange={(e) => setBulkEditValue(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50"
-                  placeholder="Enter new value..."
-                />
-              )}
-            </div>
-          </div>
-
-          <div className="flex gap-3 pt-6">
-            <Button
-              variant="secondary"
-              onClick={() => setShowBulkEditModal(false)}
-              className="flex-1"
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              onClick={handleBulkEdit}
-              className="flex-1 shadow-lg shadow-primary-500/20"
-              loading={bulkEditing}
-              disabled={bulkEditing || !bulkEditValue}
-            >
-              Apply to {selectedRows.length} Records
-            </Button>
-          </div>
-        </div>
-      </Modal>
+      {/* Compose Email Modal (single) */}
+      <ComposeEmailModal
+        isOpen={emailModal.open}
+        onClose={() => setEmailModal({ open: false, accreditation: null })}
+        recipients={emailModal.accreditation ? [emailModal.accreditation] : []}
+        event={currentEvent}
+        zones={zones}
+        isBulk={false}
+      />
     </div>
   );
 }

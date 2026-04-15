@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { motion } from "motion/react";
-import { Settings as SettingsIcon, Save, Shield, Bell, Database, Info, Mail, Send, Eye, EyeOff, CheckCircle, XCircle, Loader2, RefreshCw, Server, FileText, RotateCcw } from "lucide-react";
+import { Settings as SettingsIcon, Save, Shield, Bell, Database, Info, Mail, Send, Eye, EyeOff, CheckCircle, XCircle, Loader2, RefreshCw, Server, FileText, RotateCcw, Lock, X } from "lucide-react";
 import Card, { CardHeader, CardContent } from "../../components/ui/Card";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
@@ -9,12 +9,14 @@ import { useToast } from "../../components/ui/Toast";
 import { useAuth } from "../../contexts/AuthContext";
 import { supabase } from "../../lib/supabase";
 import { uploadToStorage } from "../../lib/uploadToStorage";
+import { TicketingAPI, EventsAPI } from "../../lib/storage";
+import SearchableSelect from "../../components/ui/SearchableSelect";
 
 const SUPABASE_URL = "https://dixelomafeobabahqeqg.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRpeGVsb21hZmVvYmFiYWhxZXFnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzEzMzA4MzYsImV4cCI6MjA4NjkwNjgzNn0.YD1lj0T6kFoM2XyeYonIC3bmLiPkKBvmXEHEr5VMaGM";
 
 export default function Settings() {
-  const { user } = useAuth();
+  const { user, isSuperAdmin } = useAuth();
   const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [profileData, setProfileData] = useState({
@@ -31,15 +33,26 @@ export default function Settings() {
   const [testEmail, setTestEmail] = useState("");
   const [smtpStatus, setSmtpStatus] = useState("unknown");
   const [lastTestResult, setLastTestResult] = useState(null);
+  
+  // Security PIN state
+  const [securityPin, setSecurityPin] = useState("");
+  const [genericPassPin, setGenericPassPin] = useState("");
+  const [showPin, setShowPin] = useState(false);
+  const [showGenericPin, setShowGenericPin] = useState(false);
+  const [savingPin, setSavingPin] = useState(false);
+  const [savingGenericPin, setSavingGenericPin] = useState(false);
 
   const [templateTab, setTemplateTab] = useState("approved");
   const [templates, setTemplates] = useState({
     approved: { subject: "", body: "" },
     rejected: { subject: "", body: "" },
-    custom: { subject: "", body: "" }
+    custom: { subject: "", body: "" },
+    ticket_delivery: { subject: "", body: "" }
   });
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [loadingTemplates, setLoadingTemplates] = useState(true);
+  const [events, setEvents] = useState([]);
+  const [selectedEventId, setSelectedEventId] = useState(null);
 
   const smtpConfig = {
     host: "mail.apexsports.ae",
@@ -51,23 +64,66 @@ export default function Settings() {
   };
 
   useEffect(() => {
-    loadTemplates();
-  }, []);
+    loadEvents();
+    if (isSuperAdmin) {
+      loadSecuritySettings();
+    }
+  }, [isSuperAdmin]);
 
-  const loadTemplates = async () => {
+  useEffect(() => {
+    loadTemplates(selectedEventId);
+  }, [selectedEventId]);
+
+  const loadEvents = async () => {
+    try {
+      const data = await EventsAPI.getAll();
+      setEvents(data || []);
+    } catch (err) {
+      console.error("Failed to load events:", err);
+    }
+  };
+
+  const loadSecuritySettings = async () => {
+    try {
+      const [pin, gPin] = await Promise.all([
+        TicketingAPI.getSecuritySetting("deletion_pin"),
+        TicketingAPI.getSecuritySetting("generic_pass_pin")
+      ]);
+      if (pin) setSecurityPin(pin);
+      if (gPin) setGenericPassPin(gPin);
+    } catch (err) {
+      console.warn("Security settings not found");
+    }
+  };
+
+  const loadTemplates = async (eventId = null) => {
     setLoadingTemplates(true);
     try {
-      const { data, error } = await supabase
-        .from("email_templates")
-        .select("*");
+      const query = supabase.from("email_templates").select("*");
+      
+      if (eventId) {
+        query.eq("event_id", eventId);
+      } else {
+        query.is("event_id", null);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
-      const mapped = {};
+      
+      const mapped = {
+        approved: { subject: "", body: "" },
+        rejected: { subject: "", body: "" },
+        custom: { subject: "", body: "" },
+        ticket_delivery: { subject: "", body: "" }
+      };
+
       (data || []).forEach((t) => {
         mapped[t.template_type] = { subject: t.subject || "", body: t.body || "" };
       });
-      setTemplates((prev) => ({ ...prev, ...mapped }));
+      setTemplates(mapped);
     } catch (err) {
       console.error("Failed to load email templates:", err);
+      toast.error("Error loading templates");
     } finally {
       setLoadingTemplates(false);
     }
@@ -148,10 +204,11 @@ export default function Settings() {
         .from("email_templates")
         .upsert({
           template_type: templateTab,
+          event_id: selectedEventId,
           subject: current.subject,
           body: current.body,
           updated_at: new Date().toISOString()
-        }, { onConflict: "template_type" });
+        }, { onConflict: "template_type, event_id" });
       if (error) throw error;
       toast.success(`${templateTab.charAt(0).toUpperCase() + templateTab.slice(1)} email template saved!`);
     } catch (err) {
@@ -175,6 +232,10 @@ export default function Settings() {
       custom: {
         subject: "Your Accreditation - {eventName}",
         body: "Dear {name},\n\nPlease find your accreditation details attached.\n\nEvent: {eventName}\nRole: {role}\nBadge: {badge}\n\nPlease present this at the venue for badge collection.\n\nBest regards,\nApex Sports Accreditations"
+      },
+      ticket_delivery: {
+        subject: "Booking Confirmation - {eventName}",
+        body: "Dear {name},\n\nThank you for booking your ticket(s) with us. We are thrilled to welcome you to {eventName}!\n\nAttached to this email, you will find your official e-ticket(s). Please review your booking details carefully:\n\nEvent: {eventName}\nTotal Tickets: {ticketCount} Person(s)\nAmount Paid: {amountPaid} AED\nPayment Method: {paymentMethod}\nReference ID: {qrCodeId}\n\nPlease keep this email safe and present the attached QR code at the event entrance for scanning. To ensure a smooth entry, please have your ID ready as it may be required for verification.\n\nIf you have any questions or require any assistance, simply reply directly to this email.\n\nWe hope you thoroughly enjoy the event!\n\nWarm regards,\nThe Apex Sports Team"
       }
     };
     setTemplates((prev) => ({ ...prev, [templateTab]: defaults[templateTab] }));
@@ -195,6 +256,40 @@ export default function Settings() {
       toast.error("Failed to save settings");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleUpdatePin = async () => {
+    if (!securityPin || securityPin.length < 4) {
+      toast.error("PIN must be at least 4 digits");
+      return;
+    }
+    setSavingPin(true);
+    try {
+      await TicketingAPI.updateSecuritySetting("deletion_pin", securityPin);
+      toast.success("Security PIN updated successfully");
+      setShowPin(false);
+    } catch (err) {
+      toast.error("Failed to update security PIN");
+    } finally {
+      setSavingPin(false);
+    }
+  };
+
+  const handleUpdateGenericPin = async () => {
+    if (!genericPassPin || genericPassPin.length < 4) {
+      toast.error("PIN must be at least 4 digits");
+      return;
+    }
+    setSavingGenericPin(true);
+    try {
+      await TicketingAPI.updateSecuritySetting("generic_pass_pin", genericPassPin);
+      toast.success("Generic Pass PIN updated successfully");
+      setShowGenericPin(false);
+    } catch (err) {
+      toast.error("Failed to update Generic Pass PIN");
+    } finally {
+      setSavingGenericPin(false);
     }
   };
 
@@ -299,30 +394,31 @@ export default function Settings() {
   return (
     <div id="settings_page" className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-white mb-2">Settings</h1>
-        <p className="text-lg text-slate-400 font-extralight">
-          Manage your account, email configuration, and system preferences
+        <h1 className="font-h1 text-main mb-1 uppercase tracking-tight">System Core</h1>
+        <p className="text-sm text-muted font-medium tracking-wide uppercase opacity-70">
+          Global Configuration & Infrastructure Control
         </p>
       </div>
 
       <div className="flex flex-col md:flex-row gap-6">
         {/* Settings Navigation Sidebar */}
         <div className="w-full md:w-64 lg:w-72 flex-shrink-0">
-          <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-2 sticky top-6">
+          <div className="bg-base-alt border border-border rounded-2xl p-2 sticky top-6">
             {[
               { id: "smtp", label: "SMTP Email Config", icon: Mail, color: "violet" },
               { id: "templates", label: "Email Templates", icon: FileText, color: "emerald" },
               { id: "profile", label: "Profile Setting", icon: Shield, color: "primary" },
               { id: "system", label: "System Information", icon: Info, color: "cyan" },
               { id: "notifications", label: "Notifications Settings", icon: Bell, color: "amber" },
-            ].map((tab) => (
+              isSuperAdmin && { id: "security", label: "Security & Passcodes", icon: Lock, color: "red" },
+            ].filter(Boolean).map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl text-lg font-medium transition-all mb-1 last:mb-0 ${
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold transition-all mb-1 last:mb-0 uppercase tracking-widest whitespace-nowrap ${
                   activeTab === tab.id
-                    ? `bg-${tab.color}-500/10 text-${tab.color}-400 border border-${tab.color}-500/20`
-                    : "text-slate-400 hover:text-white hover:bg-slate-800/50 border border-transparent"
+                    ? `bg-primary-500/10 text-primary border border-primary-500/20 shadow-[0_0_15px_-5px_rgba(34,211,238,0.2)]`
+                    : "text-muted hover:text-main hover:bg-base border border-transparent"
                 }`}
               >
                 <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? `text-${tab.color}-400` : "text-slate-500"}`} />
@@ -344,9 +440,9 @@ export default function Settings() {
                 <Mail className="w-5 h-5 text-violet-400" />
               </div>
               <div>
-                <h2 className="text-xl font-semibold text-white">SMTP Email Configuration</h2>
-                <p className="text-lg text-slate-400 font-extralight">
-                  Outgoing email server for accreditation notifications
+                <h2 className="font-h2 text-main uppercase">SMTP Protocol Hub</h2>
+                <p className="text-[10px] text-muted font-bold uppercase tracking-widest mt-1">
+                  Secure Outgoing Transmission Layer
                 </p>
               </div>
             </div>
@@ -362,16 +458,16 @@ export default function Settings() {
                   Server Settings
                 </h3>
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-slate-800/50 border border-slate-700/50">
-                    <span className="text-lg text-slate-400 font-extralight">SMTP Host</span>
-                    <span className="text-lg text-white font-medium">{smtpConfig.host}</span>
+                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-base-alt border border-border">
+                    <span className="text-lg text-muted font-extralight">SMTP Host</span>
+                    <span className="text-lg text-main font-medium">{smtpConfig.host}</span>
                   </div>
-                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-slate-800/50 border border-slate-700/50">
-                    <span className="text-lg text-slate-400 font-extralight">Port</span>
-                    <span className="text-lg text-white font-medium">{smtpConfig.port}</span>
+                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-base-alt border border-border">
+                    <span className="text-lg text-muted font-extralight">Port</span>
+                    <span className="text-lg text-main font-medium">{smtpConfig.port}</span>
                   </div>
-                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-slate-800/50 border border-slate-700/50">
-                    <span className="text-lg text-slate-400 font-extralight">Encryption</span>
+                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-base-alt border border-border">
+                    <span className="text-lg text-muted font-extralight">Encryption</span>
                     <Badge variant="success">{smtpConfig.encryption}</Badge>
                   </div>
                 </div>
@@ -383,31 +479,31 @@ export default function Settings() {
                   Authentication
                 </h3>
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-slate-800/50 border border-slate-700/50">
-                    <span className="text-lg text-slate-400 font-extralight">Username</span>
-                    <span className="text-lg text-white font-medium">{smtpConfig.username}</span>
+                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-base-alt border border-border">
+                    <span className="text-lg text-muted font-extralight">Username</span>
+                    <span className="text-lg text-main font-medium">{smtpConfig.username}</span>
                   </div>
-                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-slate-800/50 border border-slate-700/50">
-                    <span className="text-lg text-slate-400 font-extralight">Password</span>
+                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-base-alt border border-border">
+                    <span className="text-lg text-muted font-extralight">Password</span>
                     <div className="flex items-center gap-2">
-                      <span className="text-lg text-white font-medium">
+                      <span className="text-lg text-main font-medium">
                         {showPassword ? "Swim2024$$" : "••••••••••"}
                       </span>
                       <button
                         onClick={() => setShowPassword(!showPassword)}
-                        className="p-1 rounded hover:bg-slate-700/50 transition-colors"
+                        className="p-1 rounded hover:bg-base transition-colors"
                       >
                         {showPassword ? (
-                          <EyeOff className="w-4 h-4 text-slate-400" />
+                          <EyeOff className="w-4 h-4 text-muted" />
                         ) : (
-                          <Eye className="w-4 h-4 text-slate-400" />
+                          <Eye className="w-4 h-4 text-muted" />
                         )}
                       </button>
                     </div>
                   </div>
-                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-slate-800/50 border border-slate-700/50">
-                    <span className="text-lg text-slate-400 font-extralight">From Name</span>
-                    <span className="text-lg text-white font-medium">{smtpConfig.fromName}</span>
+                  <div className="flex items-center justify-between py-2.5 px-4 rounded-lg bg-base-alt border border-border">
+                    <span className="text-lg text-muted font-extralight">From Name</span>
+                    <span className="text-lg text-main font-medium">{smtpConfig.fromName}</span>
                   </div>
                 </div>
               </div>
@@ -502,28 +598,56 @@ export default function Settings() {
         </CardHeader>
         <CardContent>
           <div className="space-y-5">
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               {[
                 { key: "approved", label: "Approval Email", color: "emerald" },
                 { key: "rejected", label: "Rejection Email", color: "red" },
-                { key: "custom", label: "Compose Default", color: "cyan" }
+                { key: "custom", label: "Compose Default", color: "cyan" },
+                { key: "ticket_delivery", label: "Ticket Delivery", color: "amber" }
               ].map((tab) => (
                 <button
                   key={tab.key}
                   onClick={() => setTemplateTab(tab.key)}
-                  className={`px-4 py-2.5 rounded-lg text-lg font-medium transition-all ${
+                  className={`px-4 py-2.5 mb-2 rounded-lg text-lg font-medium transition-all ${
                     templateTab === tab.key
                       ? tab.color === "emerald"
                         ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
                         : tab.color === "red"
                         ? "bg-red-500/20 text-red-300 border border-red-500/40"
-                        : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                        : tab.color === "cyan"
+                        ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                        : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
                       : "bg-slate-800/50 text-slate-400 border border-slate-700/50 hover:text-white"
                   }`}
                 >
                   {tab.label}
                 </button>
               ))}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-2">
+              <div className="space-y-1.5">
+                <label className="block text-lg font-medium text-slate-300">
+                  Target Event
+                </label>
+                <select
+                  value={selectedEventId || ""}
+                  onChange={(e) => setSelectedEventId(e.target.value || null)}
+                  className="w-full px-4 py-2.5 bg-base-alt border border-border rounded-lg text-main focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 text-lg font-extralight"
+                >
+                  <option value="">Global System Defaults</option>
+                  {events.map((ev) => (
+                    <option key={ev.id} value={ev.id}>
+                      {ev.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-sm text-slate-500 italic mt-1 font-extralight">
+                  {selectedEventId 
+                    ? `Changes will apply ONLY to "${events.find(e => e.id === selectedEventId)?.name}"`
+                    : "Changes will apply to ALL events unless they have a specific template"}
+                </p>
+              </div>
             </div>
 
             {loadingTemplates ? (
@@ -557,15 +681,15 @@ export default function Settings() {
                       }))
                     }
                     rows={10}
-                    className="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 text-lg font-extralight"
+                    className="w-full px-4 py-2.5 bg-base-alt border border-border rounded-lg text-main placeholder-muted focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 text-lg font-extralight"
                     placeholder="Write your email template here..."
                   />
                 </div>
 
-                <div className="p-4 rounded-lg bg-slate-800/30 border border-slate-700/50">
+                <div className="p-4 rounded-lg bg-base-alt border border-border">
                   <p className="text-lg text-slate-300 font-medium mb-2">Available Placeholders:</p>
                   <div className="flex flex-wrap gap-2">
-                    {["{name}", "{firstName}", "{lastName}", "{eventName}", "{role}", "{badge}", "{zones}", "{email}"].map((ph) => (
+                    {["{name}", "{firstName}", "{lastName}", "{eventName}", "{role}", "{badge}", "{zones}", "{email}", "{ticketCount}", "{amountPaid}", "{paymentMethod}", "{qrCodeId}"].map((ph) => (
                       <span
                         key={ph}
                         className="px-3 py-1.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-lg text-violet-300 font-mono cursor-pointer hover:bg-violet-500/20 transition-colors"
@@ -645,8 +769,8 @@ export default function Settings() {
                 placeholder="your@email.com"
                 disabled
               />
-              <div className="pt-2 border-t border-slate-800">
-                <p className="text-lg text-slate-400 font-extralight mb-4">Change Password</p>
+              <div className="pt-2 border-t border-border">
+                <p className="text-lg text-muted font-extralight mb-4">Change Password</p>
                 <div className="space-y-3">
                   <Input
                     label="Current Password"
@@ -692,6 +816,7 @@ export default function Settings() {
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
+              {/* System Info Items */}
               {[
                 { label: "Platform", value: "ApexAccreditation v1.0" },
                 { label: "Database", value: "Supabase (PostgreSQL)" },
@@ -700,13 +825,13 @@ export default function Settings() {
                 { label: "Email Service", value: "SMTP (SSL/TLS)" },
                 { label: "Environment", value: "Production Ready" }
               ].map((item) => (
-                <div key={item.label} className="flex items-center justify-between py-2 border-b border-slate-800 last:border-0">
-                  <span className="text-lg text-slate-400 font-extralight">{item.label}</span>
-                  <span className="text-lg text-white font-medium">{item.value}</span>
+                <div key={item.label} className="flex items-center justify-between py-2 border-b border-border last:border-0">
+                  <span className="text-lg text-muted font-extralight">{item.label}</span>
+                  <span className="text-lg text-main font-medium">{item.value}</span>
                 </div>
               ))}
               
-              <div className="pt-4 mt-2 border-t border-slate-700/50 flex flex-col gap-2">
+              <div className="pt-4 mt-2 border-t border-border flex flex-col gap-2">
                 <Button 
                   onClick={handleMigrateImages} 
                   loading={migrating} 
@@ -753,6 +878,103 @@ export default function Settings() {
                 </div>
               ))}
             </CardContent>
+              </Card>
+            </motion.div>
+          )}
+          {activeTab === "security" && isSuperAdmin && (
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+              <Card className="border-red-500/20 bg-red-500/5">
+                <CardHeader>
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-red-500/10 rounded-lg">
+                      <Lock className="w-5 h-5 text-red-400" />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-semibold text-white">Security & Passcodes</h2>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">
+                        Super Admin Override Controls
+                      </p>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  {/* Order Deletion PIN */}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-4 rounded-xl bg-slate-900/50 border border-slate-800">
+                    <div className="max-w-md">
+                      <h4 className="text-white font-bold mb-1 italic uppercase tracking-tighter">Order Deletion PIN</h4>
+                      <p className="text-sm text-slate-400 leading-relaxed font-extralight">
+                        Specify a master security code required to permanently remove ticket orders from the system. 
+                        This adds a critical safety layer against accidental deletions.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col gap-3 w-full md:w-auto">
+                      <div className="relative group">
+                        <input
+                          type={showPin ? "text" : "password"}
+                          value={securityPin}
+                          onChange={(e) => setSecurityPin(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                          placeholder="Enter Security PIN"
+                          className="w-full md:w-64 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white font-mono text-xl tracking-[0.5em] focus:ring-2 focus:ring-red-500/20 outline-none transition-all placeholder:tracking-normal placeholder:text-sm"
+                        />
+                        <button 
+                          onClick={() => setShowPin(!showPin)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-slate-500 hover:text-white transition-colors"
+                        >
+                          {showPin ? <X className="w-4 h-4" /> : <Shield className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      <Button 
+                        variant="primary" 
+                        className="bg-red-500 hover:bg-red-600 text-white font-black uppercase tracking-tighter"
+                        loading={savingPin}
+                        onClick={handleUpdatePin}
+                      >
+                        Update Security PIN
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Generic Pass PIN - Green Highlighted Area */}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/30 shadow-[0_0_25px_-10px_rgba(16,185,129,0.2)]">
+                    <div className="max-w-md">
+                      <div className="flex items-center gap-2 mb-1">
+                         <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                         <h4 className="text-emerald-400 font-black uppercase italic tracking-tighter">Generic Pass Access PIN</h4>
+                      </div>
+                      <p className="text-sm text-slate-300 leading-relaxed font-extralight">
+                        Set the password required for spectators to access the Generic Pass portal. 
+                        This PIN should be shared only with authorized personnel or specific spectator groups.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col gap-3 w-full md:w-auto">
+                      <div className="relative group">
+                        <input
+                          type={showGenericPin ? "text" : "password"}
+                          value={genericPassPin}
+                          onChange={(e) => setGenericPassPin(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                          placeholder="Set Access PIN"
+                          className="w-full md:w-64 bg-slate-950 border-2 border-emerald-500/20 rounded-xl px-4 py-3 text-emerald-500 font-mono text-xl tracking-[0.5em] focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 outline-none transition-all placeholder:tracking-normal placeholder:text-sm"
+                        />
+                        <button 
+                          onClick={() => setShowGenericPin(!showGenericPin)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-emerald-500/50 hover:text-emerald-400 transition-colors"
+                        >
+                          {showGenericPin ? <X className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      <Button 
+                        variant="primary" 
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase tracking-tighter border-none shadow-lg shadow-emerald-900/40"
+                        loading={savingGenericPin}
+                        onClick={handleUpdateGenericPin}
+                      >
+                        Update Access PIN
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
               </Card>
             </motion.div>
           )}

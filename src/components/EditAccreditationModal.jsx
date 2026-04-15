@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Upload, X, Check, User, Camera, AlertTriangle, Info, Plus, Clock, CalendarX, Calendar } from "lucide-react";
+import { Upload, X, Check, User, Camera, AlertTriangle, Info, Plus, Clock, CalendarX, Calendar, FileText, Eye, Download, Image as ImageIcon } from "lucide-react";
 import Button from "./ui/Button";
 import Input from "./ui/Input";
 import Select from "./ui/Select";
 import SearchableSelect from "./ui/SearchableSelect";
+import MultiSearchableSelect from "./ui/MultiSearchableSelect";
 import Modal from "./ui/Modal";
 import { COUNTRIES, ROLES, validateFile, fileToBase64, ROLE_BADGE_PREFIXES, getBadgePrefix } from "../lib/utils";
 import { uploadToStorage } from "../lib/uploadToStorage";
@@ -54,11 +55,10 @@ function ZoneAccessSelector({ zones, selectedRole, selectedCodes, onToggle, onSe
               key={zone.id}
               type="button"
               onClick={() => onToggle(zone.code)}
-              className={`p-3 rounded-lg border-2 transition-all duration-200 text-left ${
-                isSelected
+              className={`p-3 rounded-lg border-2 transition-all duration-200 text-left ${isSelected
                   ? "border-primary-500 bg-primary-500/20"
                   : "border-slate-700 hover:border-slate-600 bg-slate-800/50"
-              }`}
+                }`}
             >
               <div className="flex items-center gap-2">
                 <div
@@ -94,8 +94,10 @@ export default function EditAccreditationModal({
   onSave,
   saving = false,
   currentEvent = null,
-  clubs = []
+  clubs = [],
+  categoryDocuments = {}
 }) {
+
   const [formData, setFormData] = useState({
     firstName: "",
     lastName: "",
@@ -106,7 +108,11 @@ export default function EditAccreditationModal({
     role: "",
     email: "",
     photoUrl: null,
-    zoneCodes: []
+    idDocumentUrl: null,
+    documents: {}, // Generic documents storage
+    badgeColor: "#2563eb",
+    zoneCodes: [],
+    selectedSports: []
   });
   const [expiryMode, setExpiryMode] = useState("none");
   const [customExpiryDate, setCustomExpiryDate] = useState("");
@@ -120,6 +126,51 @@ export default function EditAccreditationModal({
         ? accreditation.zoneCode.split(",").map(z => z.trim()).filter(Boolean)
         : [];
       const role = accreditation.role || "";
+      const documents = accreditation.documents || {};
+      
+      // APX-Debug: Log the raw data to identify where documents are stored
+      console.log("[EditModal] Raw accreditation data:", {
+        photoUrl: accreditation.photoUrl,
+        idDocumentUrl: accreditation.idDocumentUrl,
+        documents: accreditation.documents,
+        documentsKeys: Object.keys(documents)
+      });
+      
+      // APX-Fix: Find photo and passport URLs from custom document IDs
+      // Events may use custom IDs like "custom_123" instead of "picture"/"passport"
+      const eventDocs = currentEvent?.requiredDocuments || [];
+      const pictureDocConfig = eventDocs.find(d => 
+        d.label?.toLowerCase().includes('picture') || d.label?.toLowerCase().includes('photo')
+      );
+      const passportDocConfig = eventDocs.find(d => 
+        d.label?.toLowerCase().includes('passport') || d.label?.toLowerCase().includes('national id')
+      );
+      const medicalDocConfig = eventDocs.find(d => 
+        d.label?.toLowerCase().includes('medical') || d.label?.toLowerCase().includes('certificate')
+      );
+      
+      // Resolve photo URL: try standard keys first, then custom event document IDs
+      let photoUrl = accreditation.photoUrl 
+        || documents.picture || documents.photo || documents.Picture
+        || (pictureDocConfig ? documents[pictureDocConfig.id] : null)
+        || null;
+      
+      // Resolve passport/ID URL
+      const idDocumentUrl = accreditation.idDocumentUrl 
+        || documents.passport || documents.Passport
+        || (passportDocConfig ? documents[passportDocConfig.id] : null)
+        || null;
+
+      // APX-Fix: Ensure all document URLs are in the documents map so the grid can find them
+      const mergedDocuments = {
+        ...documents,
+        picture: documents.picture || photoUrl || null,
+        passport: documents.passport || idDocumentUrl || null,
+        eid: documents.eid || accreditation.eidUrl || null,
+        medical: documents.medical || accreditation.medicalUrl 
+          || (medicalDocConfig ? documents[medicalDocConfig.id] : null) || null,
+      };
+
       setFormData({
         firstName: accreditation.firstName || "",
         lastName: accreditation.lastName || "",
@@ -129,9 +180,14 @@ export default function EditAccreditationModal({
         club: accreditation.club || "",
         role: role,
         email: accreditation.email || "",
-        photoUrl: accreditation.photoUrl || null,
-        zoneCodes: zc
+        photoUrl: photoUrl,
+        idDocumentUrl: idDocumentUrl,
+        documents: mergedDocuments,
+        badgeColor: accreditation.badgeColor || "#2563eb",
+        zoneCodes: zc,
+        selectedSports: accreditation.selectedSports || []
       });
+
       setOriginalRole(role);
       setErrors({});
       if (accreditation.expiresAt) {
@@ -205,6 +261,67 @@ export default function EditAccreditationModal({
     setFormData(prev => ({ ...prev, photoUrl: null }));
   };
 
+  const handleIDUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const validation = validateFile(file);
+    if (!validation.valid) {
+      setErrors(prev => ({ ...prev, idDocumentUrl: validation.error }));
+      return;
+    }
+    try {
+      const data = await uploadToStorage(file, "edits");
+      setFormData(prev => ({ ...prev, idDocumentUrl: data.url }));
+      setErrors(prev => ({ ...prev, idDocumentUrl: null }));
+    } catch (err) {
+      setErrors(prev => ({ ...prev, idDocumentUrl: "Failed to upload document: " + (err.message || "") }));
+    }
+  };
+
+  const handleRemoveID = () => {
+    setFormData(prev => ({ ...prev, idDocumentUrl: null }));
+  };
+
+  const handleDocumentUpload = async (e, docId) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Special case for photo and passport if needed, but generic works too
+    if (docId === 'picture') {
+      return handlePhotoUpload(e);
+    }
+    if (docId === 'passport') {
+      return handleIDUpload(e);
+    }
+
+    const validation = validateFile(file);
+    if (!validation.valid) {
+      setErrors(prev => ({ ...prev, [docId]: validation.error }));
+      return;
+    }
+    try {
+      const data = await uploadToStorage(file, "edits");
+      setFormData(prev => ({
+        ...prev,
+        documents: { ...prev.documents, [docId]: data.url }
+      }));
+      setErrors(prev => ({ ...prev, [docId]: null }));
+    } catch (err) {
+      setErrors(prev => ({ ...prev, [docId]: "Failed to upload document: " + (err.message || "") }));
+    }
+  };
+
+  const handleRemoveDocument = (docId) => {
+    if (docId === 'picture') return handleRemovePhoto();
+    if (docId === 'passport') return handleRemoveID();
+
+    setFormData(prev => {
+      const newDocs = { ...prev.documents };
+      delete newDocs[docId];
+      return { ...prev, documents: newDocs };
+    });
+  };
+
   const toggleZone = (zoneCode) => {
     setFormData(prev => {
       const current = prev.zoneCodes;
@@ -275,27 +392,34 @@ export default function EditAccreditationModal({
     }
     onSave({
       ...formData,
+      eidUrl: formData.documents?.eid || null,
+      medicalUrl: formData.documents?.medical || null,
+      expiresAt: expiresAt,
       zoneCode: formData.zoneCodes.join(","),
+      selectedSports: formData.selectedSports,
       roleChanged,
-      originalRole,
-      expiresAt
+      originalRole
     });
   };
-
-  if (!accreditation) return null;
 
   const roleOptions = getRoleOptions();
   const isKnownRole = roleOptions.some(o => o.value === formData.role);
   const selectValue = customRoleMode || (!isKnownRole && formData.role !== "") ? "__custom__" : formData.role;
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Edit Accreditation" size="lg">
+    <Modal isOpen={isOpen} onClose={onClose} title={accreditation ? "Edit Accreditation" : "Add Accreditation"} size="lg">
       <div id="edit-accreditation-modal" className="p-6 space-y-6 max-h-[80vh] overflow-y-auto">
         <div className="text-lg text-slate-400 font-extralight">
-          Editing accreditation for{" "}
-          <span className="text-cyan-400 font-medium">
-            {accreditation?.firstName || ""} {accreditation?.lastName || ""}
-          </span>
+          {accreditation ? (
+            <>
+              Editing accreditation for{" "}
+              <span className="text-cyan-400 font-medium">
+                {accreditation.firstName} {accreditation.lastName}
+              </span>
+            </>
+          ) : (
+            "Create a new accreditation record"
+          )}
           {isApproved && (
             <span className="ml-2 px-2 py-0.5 bg-emerald-500/20 text-emerald-400 text-lg rounded border border-emerald-500/30">
               Approved
@@ -401,6 +525,91 @@ export default function EditAccreditationModal({
           </div>
         </div>
 
+        {/* Required Documents Section */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+          {(() => {
+            const role = formData.role;
+            const catData = eventCategories.find(c => {
+              const cd = c.category || c;
+              return (cd?.name || c?.name) === role;
+            });
+            // APX-Fix: use .id (the correct mapped field), not .category_id
+            const catId = catData?.id || catData?.category?.id || role;
+            const categorySpecificDocs = categoryDocuments[catId];
+            
+            let docs = categorySpecificDocs || currentEvent?.requiredDocuments || [
+              { id: "picture", label: "Picture", format: "JPEG, PNG, WEBP" },
+              { id: "passport", label: "Passport", format: "JPEG, PNG, WEBP, PDF" }
+            ];
+
+            return docs
+              .map(doc => {
+                const docId = typeof doc === 'string' ? doc : doc.id;
+                const docLabel = (typeof doc === 'object' ? doc.label : null) || docId;
+                
+                // Don't show picture here as it's handled in the top section
+                // We check ID (picture/photo) and Label (Picture/Photo) 
+                if (
+                  docId.toLowerCase() === 'picture' || 
+                  docId.toLowerCase() === 'photo' || 
+                  docLabel.toLowerCase() === 'picture' || 
+                  docLabel.toLowerCase() === 'photo'
+                ) return null;
+
+
+                const eventDoc = (currentEvent?.requiredDocuments || []).find(d => d.id === docId);
+                const label = (typeof doc === 'object' ? doc.label : null) || eventDoc?.label || (docId ? docId.charAt(0).toUpperCase() + docId.slice(1) : "Document");
+                
+                const isPassport = docId === 'passport';
+                // APX-Fix: check documents map first, then fall back to dedicated fields
+                const url = isPassport
+                  ? (formData.idDocumentUrl || formData.documents['passport'])
+                  : (formData.documents[docId] || null);
+                const error = isPassport ? errors.idDocumentUrl : errors[docId];
+                const handleUpload = (e) => handleDocumentUpload(e, docId);
+                const handleRemove = () => handleRemoveDocument(docId);
+
+                return (
+                  <div key={docId} className="space-y-3">
+                    <h3 className="text-lg font-semibold text-white border-b border-slate-700 pb-2">{label}</h3>
+                    <div className="flex flex-col gap-4">
+                      <div className="relative mx-auto">
+                        {url ? (
+                          <div className="w-32 h-40 rounded-lg bg-slate-800 border-2 border-primary-500/30 flex items-center justify-center relative group overflow-hidden">
+                            {url.toLowerCase().endsWith('.pdf') ? (
+                              <FileText className="w-12 h-12 text-primary-400 opacity-50" />
+                            ) : (
+                              <img src={url} alt={label} className="w-full h-full object-cover" />
+                            )}
+                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 px-2">
+                              <label className="w-full cursor-pointer px-3 py-1.5 bg-primary-500 hover:bg-primary-600 text-white text-sm rounded-lg flex items-center justify-center gap-1.5 transition-colors">
+                                <Upload className="w-4 h-4" /> Change
+                                <input type="file" accept="image/*,application/pdf" onChange={handleUpload} className="hidden" />
+                              </label>
+                              <div className="flex gap-2 w-full">
+                                <a href={url} target="_blank" rel="noopener noreferrer" className="flex-1 p-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg flex items-center justify-center transition-colors"><Eye className="w-4 h-4" /></a>
+                                <button type="button" onClick={handleRemove} className="flex-1 p-1.5 bg-red-500 hover:bg-red-600 text-white rounded-lg flex items-center justify-center transition-colors"><X className="w-4 h-4" /></button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <label className="w-32 h-40 rounded-lg bg-slate-800 flex flex-col items-center justify-center border-2 border-dashed border-slate-700 cursor-pointer hover:border-primary-500/50 transition-colors">
+                            <FileText className="w-10 h-10 text-slate-600 mb-2" />
+                            <span className="text-xs text-slate-500">Upload {label}</span>
+                            <input type="file" accept="image/*,application/pdf" onChange={handleUpload} className="hidden" />
+                          </label>
+                        )}
+                      </div>
+                      {error && <p className="text-sm text-red-400 text-center">{error}</p>}
+                    </div>
+                  </div>
+                );
+              })
+              .filter(Boolean);
+          })()}
+
+        </div>
+
         {/* Name Fields */}
         <div className="grid grid-cols-2 gap-4">
           <Input
@@ -441,6 +650,19 @@ export default function EditAccreditationModal({
           />
         </div>
 
+        <div className="relative z-[100]">
+          <SearchableSelect
+            label="Nationality"
+            value={formData.nationality}
+            onChange={(e) => {
+              setFormData(prev => ({ ...prev, nationality: e.target.value }));
+              if (errors.nationality) setErrors(prev => ({ ...prev, nationality: null }));
+            }}
+            options={COUNTRIES.map(c => ({ value: c.code, label: c.name }))}
+            placeholder="Select nationality"
+          />
+        </div>
+
         {isAthlete && age !== null && (
           <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-lg p-3">
             <p className="text-lg text-cyan-400 font-extralight">
@@ -452,11 +674,105 @@ export default function EditAccreditationModal({
           </div>
         )}
 
+        {/* Role / Category Section */}
+        <div className="space-y-3">
+          <h3 className="text-lg font-semibold text-white border-b border-slate-700 pb-2">Role / Category</h3>
+          <Select
+            label="Role *"
+            name="role"
+            value={selectValue}
+            onChange={handleRoleChange}
+            options={[...roleOptions, { value: "__custom__", label: "Other / Enter manually..." }]}
+            placeholder="Select a category"
+            required
+          />
+          {(customRoleMode || (!isKnownRole && formData.role !== "")) && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="block text-lg font-medium text-slate-300">Custom Role Name</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={formData.role}
+                    onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
+                    placeholder="Enter role title..."
+                    className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomRoleMode(false);
+                      setFormData(prev => ({ ...prev, role: "" }));
+                    }}
+                    className="p-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-slate-400 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2 border-t border-slate-700/50 pt-3">
+                <label className="block text-lg font-medium text-slate-300">Custom Role Color</label>
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg shadow-inner overflow-hidden flex-shrink-0 border border-slate-600">
+                    <input
+                      type="color"
+                      value={formData.badgeColor}
+                      onChange={(e) => setFormData(prev => ({ ...prev, badgeColor: e.target.value }))}
+                      className="w-16 h-16 -ml-3 -mt-3 cursor-pointer"
+                      title="Choose Custom Color"
+                    />
+                  </div>
+                  <div className="block">
+                    <input
+                      type="text"
+                      value={formData.badgeColor.toUpperCase()}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (/^#[0-9A-Fa-f]{0,6}$/.test(val)) {
+                          setFormData(prev => ({ ...prev, badgeColor: val }));
+                        }
+                      }}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-1 text-white text-base focus:outline-none focus:border-cyan-500 font-mono w-28 uppercase"
+                      maxLength={7}
+                      placeholder="#HEX"
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 ml-2">
+                    {["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#9333ea", "#0891b2", "#ea580c"].map(preset => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, badgeColor: preset }))}
+                        className="w-6 h-6 rounded border border-slate-600 hover:scale-110 transition-transform shadow-sm"
+                        style={{ backgroundColor: preset }}
+                        title={`Quick Preset: ${preset}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+                <p className="text-lg text-cyan-400 font-extralight mt-1">
+                  Select a specific color for this manual role to override the default hue.
+                </p>
+              </div>
+            </div>
+          )}
+          {eventCategories && eventCategories.length > 0 ? (
+            <p className="text-lg text-emerald-400 font-extralight">
+              {roleOptions.length} categories available from event settings
+            </p>
+          ) : (
+            <p className="text-lg text-amber-400 font-extralight">
+              Using default categories (no custom categories defined for this event)
+            </p>
+          )}
+        </div>
+
         {/* Affiliation Section */}
         <div className="space-y-4">
           <h3 className="text-lg font-semibold text-white border-b border-slate-700 pb-2">Affiliation</h3>
           {clubs && clubs.length > 0 ? (
-            <div className="relative z-[110]">
+            <div className="relative z-[80]">
               <SearchableSelect
                 label="Organization / Club / Academy"
                 value={formData.club}
@@ -477,59 +793,24 @@ export default function EditAccreditationModal({
               placeholder="Enter club or organization name"
             />
           )}
-          <div className="relative z-[100]">
-            <SearchableSelect
-              label="Nationality"
-              value={formData.nationality}
-              onChange={(e) => {
-                setFormData(prev => ({ ...prev, nationality: e.target.value }));
-                if (errors.nationality) setErrors(prev => ({ ...prev, nationality: null }));
-              }}
-              options={COUNTRIES.map(c => ({ value: c.code, label: c.name }))}
-              placeholder="Select nationality"
-            />
-          </div>
         </div>
 
-        {/* Role / Category Section */}
-        <div className="space-y-3">
-          <h3 className="text-lg font-semibold text-white border-b border-slate-700 pb-2">Role / Category</h3>
-          <Select
-            label="Role *"
-            name="role"
-            value={selectValue}
-            onChange={handleRoleChange}
-            options={[...roleOptions, { value: "__custom__", label: "Other / Enter manually..." }]}
-            placeholder="Select a category"
-            required
-          />
-          {(customRoleMode || (!isKnownRole && formData.role !== "")) && (
-            <div className="space-y-2">
-              <label className="block text-lg font-medium text-slate-300">Custom Role Name</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={formData.role}
-                  onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
-                  placeholder="e.g. Technical Director"
-                  className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-lg focus:outline-none focus:border-cyan-500"
-                />
-              </div>
-              <p className="text-lg text-cyan-400 font-extralight">
-                Type any role name. This will be saved as-is on the accreditation.
-              </p>
+        {/* Sports Section - Shown for Athletes or if event has sports */}
+        {isAthlete && currentEvent?.sportList && currentEvent.sportList.length > 0 && (
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-white border-b border-slate-700 pb-2">Participating Sports</h3>
+            <div className="relative z-[70]">
+              <label className="block text-sm font-bold text-slate-500 uppercase tracking-widest mb-2 px-1">Selected Sports *</label>
+              <MultiSearchableSelect
+                options={currentEvent.sportList.map(s => ({ value: s, label: s }))}
+                value={formData.selectedSports || []}
+                onChange={(val) => setFormData(prev => ({ ...prev, selectedSports: val }))}
+                placeholder="Select your sport(s)"
+                light
+              />
             </div>
-          )}
-          {eventCategories && eventCategories.length > 0 ? (
-            <p className="text-lg text-emerald-400 font-extralight">
-              {roleOptions.length} categories available from event settings
-            </p>
-          ) : (
-            <p className="text-lg text-amber-400 font-extralight">
-              Using default categories (no custom categories defined for this event)
-            </p>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Zone Access Section */}
         <div className="space-y-3">
@@ -576,11 +857,10 @@ export default function EditAccreditationModal({
             <button
               type="button"
               onClick={() => setExpiryMode("none")}
-              className={`flex items-center gap-3 p-3 rounded-lg border-2 transition-all text-left ${
-                expiryMode === "none"
+              className={`flex items-center gap-3 p-3 rounded-lg border-2 transition-all text-left ${expiryMode === "none"
                   ? "border-primary-500 bg-primary-500/20"
                   : "border-slate-700 hover:border-slate-600 bg-slate-800/50"
-              }`}
+                }`}
             >
               <CalendarX className={`w-5 h-5 flex-shrink-0 ${expiryMode === "none" ? "text-primary-400" : "text-slate-500"}`} />
               <div className="flex-1">
@@ -593,11 +873,10 @@ export default function EditAccreditationModal({
               <button
                 type="button"
                 onClick={() => setExpiryMode("event")}
-                className={`flex items-center gap-3 p-3 rounded-lg border-2 transition-all text-left ${
-                  expiryMode === "event"
+                className={`flex items-center gap-3 p-3 rounded-lg border-2 transition-all text-left ${expiryMode === "event"
                     ? "border-cyan-500 bg-cyan-500/20"
                     : "border-slate-700 hover:border-slate-600 bg-slate-800/50"
-                }`}
+                  }`}
               >
                 <Calendar className={`w-5 h-5 flex-shrink-0 ${expiryMode === "event" ? "text-cyan-400" : "text-slate-500"}`} />
                 <div className="flex-1">
@@ -610,11 +889,10 @@ export default function EditAccreditationModal({
             <button
               type="button"
               onClick={() => setExpiryMode("custom")}
-              className={`flex items-center gap-3 p-3 rounded-lg border-2 transition-all text-left ${
-                expiryMode === "custom"
+              className={`flex items-center gap-3 p-3 rounded-lg border-2 transition-all text-left ${expiryMode === "custom"
                   ? "border-amber-500 bg-amber-500/20"
                   : "border-slate-700 hover:border-slate-600 bg-slate-800/50"
-              }`}
+                }`}
             >
               <Clock className={`w-5 h-5 flex-shrink-0 ${expiryMode === "custom" ? "text-amber-400" : "text-slate-500"}`} />
               <div className="flex-1">
@@ -653,7 +931,7 @@ export default function EditAccreditationModal({
             className="flex-1"
             loading={saving}
           >
-            {saving ? "Saving..." : roleChanged ? "Save & Update Badge" : "Save Changes"}
+            {saving ? "Saving..." : accreditation ? (roleChanged ? "Save & Update Badge" : "Save Changes") : "Add Accreditation"}
           </Button>
         </div>
       </div>

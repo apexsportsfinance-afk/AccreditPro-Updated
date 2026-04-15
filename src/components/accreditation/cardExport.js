@@ -1,11 +1,31 @@
-import React from "react";
-
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
-import JSZip from "jszip";
+import React from "react";
+import { createRoot } from "react-dom/client";
+import { CardInner } from "./AccreditationCardPreview";
 
 const CARD_W_PX = 320;
 const CARD_H_PX = 454;
+
+const TICKET_W_PX = 600;
+const TICKET_H_PX = 240;
+const TICKET_W_MM = 158.75;
+const TICKET_H_MM = 63.5;
+
+/**
+ * Build a safe, consistent filename for a single accreditation card.
+ * Format: ClubName_FirstName LastName
+ * e.g. "Modern Swim Academy_Carla Sameh.pdf"
+ */
+export const buildCardFileName = (acc, ext = "pdf") => {
+  const club = (acc?.club || acc?.accreditation_club || "Unknown Club").trim();
+  const firstName = (acc?.firstName || acc?.first_name || "").trim();
+  const lastName = (acc?.lastName || acc?.last_name || "").trim();
+  const fullName = [firstName, lastName].filter(Boolean).join(" ") || "Unknown Athlete";
+  // Sanitize characters that are invalid in filenames
+  const safe = (s) => s.replace(/[\/\\:*?"<>|]/g, "-");
+  return `${safe(club)}_${safe(fullName)}.${ext}`;
+};
 
 export const PDF_SIZES = {
   card: { width: 85.6, height: 54, label: "ID Card (85.6x54 mm)" },
@@ -19,6 +39,7 @@ export const IMAGE_SIZES = {
   hd: { scale: 2, label: "HD" },
   p1280: { scale: 4, label: "1280p" },
   "4k": { scale: 6.25, label: "600 DPI" },
+  dpi300: { scale: 3.125, label: "300 DPI" },
 };
 
 const urlToBase64 = (url) =>
@@ -101,20 +122,33 @@ const inlineAllImages = async (container) => {
  * The QR is set via React state (qrDataUrl) so we poll for
  * the img[data-qr-code] to have a valid data: src.
  */
-const waitForReady = (container, timeoutMs = 8000) =>
+const waitForQR = (container, timeoutMs = 8000) =>
   new Promise((resolve) => {
     const start = Date.now();
     const check = () => {
-      const frontEl = container.querySelector("[data-qr-ready='true']");
-      if (frontEl) return resolve(true);
-      if (Date.now() - start > timeoutMs) return resolve(false);
+      const qrImg = container.querySelector("img[data-qr-code='true']");
+      if (qrImg && qrImg.getAttribute("src")?.startsWith("data:")) {
+        return resolve(true);
+      }
+      if (Date.now() - start > timeoutMs) {
+        // QR didn't load in time — continue anyway so card still exports
+        console.warn("[cardExport] QR code did not appear within timeout, exporting without QR.");
+        return resolve(false);
+      }
       setTimeout(check, 80);
     };
     check();
   });
 
-const renderOffscreenCard = async (accreditation, event, zones) =>
+const renderOffscreenCard = (accreditation, event, zones) =>
   new Promise(async (resolve, reject) => {
+    let frontBackgroundUrl = "";
+    try {
+      const { GlobalSettingsAPI } = await import("../../lib/broadcastApi");
+      const bg = await GlobalSettingsAPI.get(`event_${event.id}_front_bg`);
+      if (bg) frontBackgroundUrl = bg;
+    } catch (e) {}
+
     const SUFFIX = `_cap_${Date.now()}`;
 
     const container = document.createElement("div");
@@ -131,16 +165,11 @@ const renderOffscreenCard = async (accreditation, event, zones) =>
       "pointer-events:none;";
     document.body.appendChild(container);
 
-    const [{ createRoot }, { CardInner }] = await Promise.all([
-      import("react-dom/client"),
-      import("./AccreditationCardPreview")
-    ]);
-
     const root = createRoot(container);
 
     const cleanup = () => {
-      try { root.unmount(); } catch (_) {}
-      try { if (container.parentNode) document.body.removeChild(container); } catch (_) {}
+      try { root.unmount(); } catch (_) { }
+      try { if (container.parentNode) document.body.removeChild(container); } catch (_) { }
     };
 
     root.render(
@@ -149,6 +178,7 @@ const renderOffscreenCard = async (accreditation, event, zones) =>
         event,
         zones,
         idSuffix: SUFFIX,
+        frontBackgroundUrl
       })
     );
 
@@ -165,17 +195,21 @@ const renderOffscreenCard = async (accreditation, event, zones) =>
       const frontEl = document.getElementById(`accreditation-front-card${SUFFIX}`);
       const backEl = document.getElementById(`accreditation-back-card${SUFFIX}`);
 
-      if (!frontEl || !frontEl.dataset.qrReady) {
-        return setTimeout(poll, 50);
+      if (!frontEl || frontEl.getBoundingClientRect().width === 0) {
+        return setTimeout(poll, 100);
       }
 
-      // Final minor wait for layout stability (fonts, etc)
-      await new Promise((r) => setTimeout(r, 100));
+      // Wait specifically for QR code to be generated before capturing
+      await waitForQR(container, 8000);
+
+      await inlineAllImages(container);
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await new Promise((r) => setTimeout(r, 300));
 
       resolve({ frontEl, backEl, cleanup });
     };
 
-    setTimeout(poll, 50);
+    setTimeout(poll, 100);
   });
 
 const captureEl = async (el, scale) => {
@@ -200,29 +234,45 @@ const captureEl = async (el, scale) => {
   return canvas;
 };
 
-export const buildPDF = async (accreditation, event, zones, scale = 2, sizeKey = "card") => {
-  const { frontEl, backEl, cleanup } = await renderOffscreenCard(accreditation, event, zones);
-  
-  try {
-    const { canvas: frontCanvas, width, height } = await captureEl(frontEl, scale);
-    const pdf = new jsPDF({
-      orientation: width > height ? "l" : "p",
-      unit: "pt",
-      format: [width, height]
-    });
+export const buildPDF = async (accreditation, event, zones, scale, sizeKey) => {
+  const size = PDF_SIZES[sizeKey] || PDF_SIZES.a6;
+  const isLandscape = size.width > size.height;
 
-    pdf.addImage(frontCanvas.toDataURL("image/png"), "PNG", 0, 0, width, height);
+  const { frontEl, backEl, cleanup } = await renderOffscreenCard(accreditation, event, zones);
+
+  const pdf = new jsPDF({
+    orientation: isLandscape ? "landscape" : "portrait",
+    unit: "mm",
+    format: [size.width, size.height],
+    compress: true,
+  });
+
+  try {
+    const frontCanvas = await captureEl(frontEl, scale);
+    pdf.addImage(
+      frontCanvas.toDataURL("image/png", 1.0),
+      "PNG",
+      0, 0, size.width, size.height,
+      undefined,
+      "FAST"
+    );
 
     if (backEl) {
-      const { canvas: backCanvas, width: bw, height: bh } = await captureEl(backEl, scale);
-      pdf.addPage([bw, bh]);
-      pdf.addImage(backCanvas.toDataURL("image/png"), "PNG", 0, 0, bw, bh);
+      pdf.addPage([size.width, size.height], isLandscape ? "landscape" : "portrait");
+      const backCanvas = await captureEl(backEl, scale);
+      pdf.addImage(
+        backCanvas.toDataURL("image/png", 1.0),
+        "PNG",
+        0, 0, size.width, size.height,
+        undefined,
+        "FAST"
+      );
     }
-
-    return pdf;
   } finally {
     cleanup();
   }
+
+  return pdf;
 };
 
 const captureCardDataUrls = async (accreditation, event, zones, scale) => {
@@ -251,7 +301,7 @@ export const downloadCardPDF = async (
   event,
   zones,
   fileName,
-  scale = IMAGE_SIZES["4k"].scale,
+  scale = 3.125,
   sizeKey = "a6"
 ) => {
   const pdf = await buildPDF(accreditation, event, zones, scale, sizeKey);
@@ -262,7 +312,7 @@ export const openCardPDF = async (
   accreditation,
   event,
   zones,
-  scale = IMAGE_SIZES["4k"].scale,
+  scale = 3.125,
   sizeKey = "a6"
 ) => {
   const pdf = await buildPDF(accreditation, event, zones, scale, sizeKey);
@@ -281,7 +331,7 @@ export const printCard = async (
   accreditation,
   event,
   zones,
-  scale = IMAGE_SIZES["hd"].scale,
+  scale = 3.125,
   sizeKey = "a6"
 ) => {
   const { frontDataUrl, backDataUrl } = await captureCardDataUrls(accreditation, event, zones, scale);
@@ -351,7 +401,7 @@ ${backPageHtml}
   setTimeout(() => { if (iframe.parentNode) document.body.removeChild(iframe); }, 30000);
 };
 
-export const downloadAsImages = async (accreditation, event, zones, baseName, scale = IMAGE_SIZES["4k"].scale) => {
+export const downloadAsImages = async (accreditation, event, zones, baseName, scale = 6) => {
   const { frontDataUrl, backDataUrl } = await captureCardDataUrls(accreditation, event, zones, scale);
 
   const a1 = document.createElement("a");
@@ -383,30 +433,33 @@ export const bulkDownloadPDFs = async (
 ) => {
   if (!accreditations || accreditations.length === 0) return;
 
-  const CONCURRENCY = 3; // HTML2Canvas is heavy, keep concurrency low
+  const scale = 5;
+
   try {
-    const JSZipConstructor = typeof JSZip === 'function' ? JSZip : (JSZip.default || JSZip);
-    const zip = new JSZipConstructor();
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
     let completed = 0;
     let failed = 0;
 
-    for (let i = 0; i < accreditations.length; i += CONCURRENCY) {
-      const batch = accreditations.slice(i, i + CONCURRENCY);
-
-      await Promise.all(batch.map(async (acc) => {
-        try {
-          const pdf = await buildPDF(acc, event, zones, 2);
-          const pdfBlob = pdf.output("blob");
-          const fileName = `${acc.firstName || "Unknown"}_${acc.lastName || "Unknown"}_Accreditation.pdf`;
-          zip.file(fileName, pdfBlob);
-          completed++;
-          onProgress?.(completed, accreditations.length, failed);
-        } catch (err) {
-          console.warn(`Failed PDF for ${acc.firstName}:`, err);
-          failed++;
-          onProgress?.(completed, accreditations.length, failed);
-        }
-      }));
+    // Process ONE at a time to prevent DOM rendering race conditions
+    // (concurrent renders write to the same off-screen container and corrupt each other's output)
+    for (let i = 0; i < accreditations.length; i++) {
+      const acc = accreditations[i];
+      try {
+        const pdf = await buildPDF(acc, event, zones, scale, sizeKey);
+        const pdfBlob = pdf.output("blob");
+        // Use sequential index to guarantee unique, ordered filenames in the zip
+        const paddedIndex = String(i + 1).padStart(3, "0");
+        const baseName = buildCardFileName(acc, "pdf").replace(/\.pdf$/i, "");
+        const fileName = `${paddedIndex}_${baseName}.pdf`;
+        zip.file(fileName, pdfBlob);
+        completed++;
+        onProgress?.(completed, accreditations.length, failed);
+      } catch (err) {
+        console.warn(`Failed PDF for ${acc.firstName} ${acc.lastName}:`, err);
+        failed++;
+        onProgress?.(completed, accreditations.length, failed);
+      }
     }
 
     const zipBlob = await zip.generateAsync({ type: "blob" });
@@ -426,10 +479,51 @@ export const bulkDownloadPDFs = async (
   }
 };
 
+export const downloadMultiTicketPDF = async (elementIds, fileName) => {
+  if (!elementIds || elementIds.length === 0) return;
+
+  const pdf = new jsPDF({
+    orientation: "landscape",
+    unit: "mm",
+    format: [TICKET_W_MM, TICKET_H_MM],
+    compress: true,
+  });
+
+  for (let i = 0; i < elementIds.length; i++) {
+    const el = document.getElementById(elementIds[i]);
+    if (!el) continue;
+
+    if (i > 0) pdf.addPage([TICKET_W_MM, TICKET_H_MM], "landscape");
+
+    const canvas = await html2canvas(el, {
+      scale: 3.125, // 300 DPI
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: "#ffffff",
+      width: TICKET_W_PX,
+      height: TICKET_H_PX,
+      windowWidth: TICKET_W_PX,
+      windowHeight: TICKET_H_PX,
+      logging: false,
+    });
+
+    pdf.addImage(
+      canvas,
+      "PNG",
+      0, 0, TICKET_W_MM, TICKET_H_MM,
+      undefined,
+      "FAST"
+    );
+  }
+
+  pdf.save(fileName);
+};
+
 export default {
   PDF_SIZES,
   IMAGE_SIZES,
   downloadCardPDF,
+  downloadMultiTicketPDF,
   openCardPDF,
   printCard,
   downloadAsImages,

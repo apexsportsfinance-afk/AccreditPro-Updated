@@ -6,22 +6,27 @@ import Select from "../../components/ui/Select";
 import { useToast } from "../../components/ui/Toast";
 import QRSystemV3Tab from "../../components/accreditation/QRSystemV3Tab";
 import { EventsAPI } from "../../lib/storage";
+import { useAuth } from "../../contexts/AuthContext";
 
 export default function QRSystem() {
   const toast = useToast();
   const [events, setEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState("");
+  const { canAccessEvent } = useAuth();
 
   useEffect(() => {
     EventsAPI.getAll().then(evs => {
-      setEvents(evs);
-      if (evs.length > 0) setSelectedEvent(evs[0].id);
+      const filtered = evs.filter(e => canAccessEvent(e.id));
+      setEvents(filtered);
+      if (filtered.length > 0) setSelectedEvent(filtered[0].id);
     }).catch(console.error);
   }, []);
 
   const handleToast = (msg, type = "success") => {
+    if (!msg) return;
     if (type === "success") toast.success(msg);
     else if (type === "error") toast.error(msg);
+    else if (type === "warning") toast.warning(msg);
     else if (type === "info") toast.info(msg);
     else toast.success(msg);
   };

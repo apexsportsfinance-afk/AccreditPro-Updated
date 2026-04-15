@@ -1,35 +1,22 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState } from 'react';
 
-const LayoutContext = createContext(null);
+const LayoutContext = createContext({});
 
-export const useLayout = () => {
-  const context = useContext(LayoutContext);
-  if (!context) {
-    throw new Error("useLayout must be used within LayoutProvider");
-  }
-  return context;
-};
-
-export const LayoutProvider = ({ children }) => {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-
-  // Persistence
-  useEffect(() => {
-    const stored = localStorage.getItem("sidebar_collapsed");
-    if (stored === "true") setSidebarCollapsed(true);
-  }, []);
-
-  const toggleSidebar = () => {
-    setSidebarCollapsed(prev => {
-      const newVal = !prev;
-      localStorage.setItem("sidebar_collapsed", String(newVal));
-      return newVal;
-    });
-  };
+export function LayoutProvider({ children }) {
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeItem, setActiveItem] = useState('');
 
   return (
-    <LayoutContext.Provider value={{ sidebarCollapsed, setSidebarCollapsed, toggleSidebar }}>
+    <LayoutContext.Provider value={{ sidebarOpen, setSidebarOpen, activeItem, setActiveItem }}>
       {children}
     </LayoutContext.Provider>
   );
-};
+}
+
+export function useLayout() {
+  const context = useContext(LayoutContext);
+  if (context === undefined) {
+    throw new Error('useLayout must be used within a LayoutProvider');
+  }
+  return context;
+}

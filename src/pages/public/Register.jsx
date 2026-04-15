@@ -18,13 +18,17 @@ import {
   Search,
   X
 } from "lucide-react";
-import { Calendar, Clock, MapPin } from "lucide-react";
+import { Flag as FlagIcon, Mail as MailIcon, Upload as UploadIcon, Calendar, Search as SearchIcon, Loader2 as Loader2Icon, CheckCircle as CheckCircleIcon, Smartphone, User as UserIcon, Files } from "lucide-react";
+import TermsModal from "../../components/TermsModal";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
 import Select from "../../components/ui/Select";
 import SearchableSelect from "../../components/ui/SearchableSelect";
+import MultiSearchableSelect from "../../components/ui/MultiSearchableSelect";
 import Modal from "../../components/ui/Modal";
+import ThemeToggle from "../../components/ui/ThemeToggle";
 import SwimmingBackground from "../../components/ui/SwimmingBackground";
+import { useTheme } from "../../contexts/ThemeContext";
 import { EventsAPI, AccreditationsAPI, EventCategoriesAPI, CategoriesAPI } from "../../lib/storage";
 import { COUNTRIES, ROLES, validateFile, fileToBase64 } from "../../lib/utils";
 import { SportEventsAPI, GlobalSettingsAPI } from "../../lib/broadcastApi";
@@ -48,6 +52,8 @@ function formatDateDisplay(dateStr) {
 
 export default function Register() {
   const { slug } = useParams();
+  const [documentOptions, setDocumentOptions] = useState([]);
+  const [globalCategories, setGlobalCategories] = useState([]); // Buffer for UUID-to-Name resolution
   const [event, setEvent] = useState(null);
   const [eventCategories, setEventCategories] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -67,14 +73,20 @@ export default function Register() {
     email: "",
     photo: null,
     idDocument: null,
-    documents: {}
+    documents: {},
+    sportName: "",
+    selectedSports: []
   });
   const [selectedSportEvents, setSelectedSportEvents] = useState([]);
   const [teamRoles, setTeamRoles] = useState(["athlete", "coach", "head coach", "team admin", "team doctor", "team manager", "team official", "team physiotherapist"]);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [termsModalOpen, setTermsModalOpen] = useState(false);
+  const [hasViewedTerms, setHasViewedTerms] = useState(false);
   const [duplicateError, setDuplicateError] = useState(null);
   const [clubs, setClubs] = useState([]);
+  const [categoryAllowlist, setCategoryAllowlist] = useState({});
+  const [categorySports, setCategorySports] = useState({});
+  const [categoryDocuments, setCategoryDocuments] = useState({});
 
   useEffect(() => {
     const loadEvent = async () => {
@@ -83,11 +95,13 @@ export default function Register() {
       if (eventData) {
         try {
           const eventCats = await EventCategoriesAPI.getByEventId(eventData.id);
+          const allGlobalCats = await CategoriesAPI.getActive();
+          setGlobalCategories(allGlobalCats || []);
+          
           if (eventCats.length > 0) {
             setEventCategories(eventCats.map(ec => ec.category).filter(Boolean));
           } else {
-            const allCats = await CategoriesAPI.getActive();
-            setEventCategories(allCats);
+            setEventCategories(allGlobalCats || []);
           }
           
           // Identify Team roles based on parentId or names
@@ -119,6 +133,60 @@ export default function Register() {
         console.error("Failed to load clubs:", err);
         setClubs([]);
       }
+      // Fetch dynamic category allowlist restrictions
+      try {
+        const allowlistRaw = await GlobalSettingsAPI.get(`event_${eventData.id}_category_allowlist`);
+        if (allowlistRaw) {
+          setCategoryAllowlist(typeof allowlistRaw === 'string' ? JSON.parse(allowlistRaw) : allowlistRaw);
+        }
+      } catch (err) {
+        console.error("Failed to load allowlist:", err);
+      }
+      
+      // Fetch dynamic category sports restrictions
+      try {
+        const sportsRaw = await GlobalSettingsAPI.get(`event_${eventData.id}_category_sports`);
+        if (sportsRaw) {
+          setCategorySports(typeof sportsRaw === 'string' ? JSON.parse(sportsRaw) : sportsRaw);
+        }
+      } catch (err) {
+        console.error("Failed to load category sports:", err);
+      }
+
+      // Fetch dynamic category documents restrictions
+      try {
+        const docsRaw = await GlobalSettingsAPI.get(`event_${eventData.id}_category_documents`);
+        if (docsRaw) {
+          setCategoryDocuments(typeof docsRaw === 'string' ? JSON.parse(docsRaw) : docsRaw);
+        }
+      } catch (err) {
+        console.error("Failed to load category documents:", err);
+      }
+
+      // Fetch event sport category
+      try {
+        const sportRaw = await GlobalSettingsAPI.get(`event_${eventData.id}_sport`);
+        if (sportRaw) {
+          try {
+            const parsedSport = JSON.parse(sportRaw);
+            eventData.sportList = Array.isArray(parsedSport) ? parsedSport : [parsedSport];
+            eventData.sport = eventData.sportList.join(", ");
+          } catch(e) {
+            eventData.sportList = [sportRaw];
+            eventData.sport = sportRaw;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load sport:", err);
+      }
+
+      // Re-set event state with all properties including fetched ones
+      setEvent({ ...eventData });
+      
+      // Auto-select sport if only one is available
+      if (eventData.sportList && eventData.sportList.length === 1) {
+        setFormData(prev => ({ ...prev, sportName: eventData.sportList[0], selectedSports: [eventData.sportList[0]] }));
+      }
       }
       setLoading(false);
     };
@@ -126,17 +194,181 @@ export default function Register() {
   }, [slug]);
 
   const getRequiredDocuments = () => {
+    const formatToAccept = (formatStr) => {
+      if (!formatStr) return "image/jpeg,image/png,image/webp,application/pdf";
+      const f = formatStr.toLowerCase();
+      const types = [];
+      if (f.includes("pdf")) types.push("application/pdf");
+      if (f.includes("jpg") || f.includes("jpeg")) types.push("image/jpeg");
+      if (f.includes("png")) types.push("image/png");
+      if (f.includes("webp")) types.push("image/webp");
+      return types.length > 0 ? types.join(",") : "image/jpeg,image/png,image/webp,application/pdf";
+    };
+
     if (!event) return [DEFAULT_DOCUMENTS[0], DEFAULT_DOCUMENTS[1]];
-    const docs = event.requiredDocuments;
+    
+    // Find the selected category object by name to get its ID (using robust normalized matching)
+    const selectedCat = eventCategories.find(c => (c.name || '').trim().toLowerCase() === (formData.role || '').trim().toLowerCase());
+    const catId = selectedCat ? selectedCat.id : null;
+    
+    let docs = event.requiredDocuments;
+    
+    // Try to find category-specific documents with multiple strategies
+    if (categoryDocuments && formData.role) {
+      let catDocs = null;
+      const normalizedRole = formData.role.trim().toLowerCase();
+
+      // Strategy 1: Look up by UUID (The primary key)
+      if (catId && categoryDocuments[catId] && Array.isArray(categoryDocuments[catId]) && categoryDocuments[catId].length > 0) {
+        catDocs = categoryDocuments[catId];
+      }
+
+      // Strategy 2: Look up by role name string directly (case-insensitive key match)
+      if (!catDocs) {
+        const nameMatchKey = Object.keys(categoryDocuments).find(k => k.trim().toLowerCase() === normalizedRole);
+        if (nameMatchKey && Array.isArray(categoryDocuments[nameMatchKey]) && categoryDocuments[nameMatchKey].length > 0) {
+          catDocs = categoryDocuments[nameMatchKey];
+        }
+      }
+
+      // Strategy 3: Exhaustive search — check every key in docs config against eventCategories
+      if (!catDocs) {
+        for (const [key, value] of Object.entries(categoryDocuments)) {
+          const matchingCat = eventCategories.find(c => 
+            c.id === key || 
+            (c.name || '').trim().toLowerCase() === key.trim().toLowerCase()
+          );
+          
+          if (matchingCat && matchingCat.name.trim().toLowerCase() === normalizedRole && Array.isArray(value) && value.length > 0) {
+            catDocs = value;
+            break;
+          }
+        }
+      }
+
+      if (catDocs) {
+        docs = catDocs;
+      } else {
+        // Log mismatch if still failing to help debug in browser console
+        console.warn(`[Accreditation] No custom docs found for role "${formData.role}". CatID: ${catId}. Keys in categoryDocuments:`, Object.keys(categoryDocuments));
+      }
+    }
+
     if (!docs || !Array.isArray(docs) || docs.length === 0) {
       return [DEFAULT_DOCUMENTS[0], DEFAULT_DOCUMENTS[1]];
     }
-    return DEFAULT_DOCUMENTS.filter(d => docs.includes(d.id));
+    
+    // Create a master lookup from the event's primary documents list
+    // This allows category-specific document list (which might only have IDs) to find their labels
+    const masterDocs = event.requiredDocuments || [];
+
+    return docs.map(doc => {
+      // 1. If it's already an active rich object with a non-ID-looking label, use it
+      if (typeof doc === 'object' && doc.label && !doc.label.startsWith('custom_')) {
+         return {
+          id: doc.id,
+          label: doc.label,
+          format: doc.format,
+          accept: formatToAccept(doc.format)
+        };
+      }
+
+      // 2. Identify the target ID
+      const targetId = typeof doc === 'string' ? doc : doc.id;
+
+      // 3. Find in master list (for custom documents defined in event settings)
+      const masterFound = masterDocs.find(d => d.id === targetId);
+      if (masterFound && masterFound.label) {
+        return {
+          id: targetId,
+          label: masterFound.label,
+          format: masterFound.format || "JPEG, PNG, PDF",
+          accept: formatToAccept(masterFound.format)
+        };
+      }
+
+      // 4. Find in DEFAULT_DOCUMENTS (Picture, Passport, etc.)
+      const defaultFound = DEFAULT_DOCUMENTS.find(d => d.id === targetId);
+      if (defaultFound) return defaultFound;
+
+      // 5. Hard Fallback (Capitalize the ID)
+      return { 
+        id: targetId, 
+        label: targetId.charAt(0).toUpperCase() + targetId.slice(1).replace(/_/g, ' '), 
+        accept: "image/jpeg,image/png,image/webp,application/pdf" 
+      };
+    });
+
   };
+
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    
+    if (name === "role") {
+      let newClub = "";
+      
+      const normalizedRole = (value || '').trim().toLowerCase();
+      const selectedCat = eventCategories.find(c => (c.name || '').trim().toLowerCase() === normalizedRole);
+      const catId = selectedCat ? selectedCat.id : null;
+      
+      // Auto-fill club explicitly handling robust lookups
+      let restrictedOrgs = null;
+      if (categoryAllowlist && normalizedRole) {
+        if (catId && categoryAllowlist[catId]) restrictedOrgs = categoryAllowlist[catId];
+        
+        // Exhaustive fallback: Search all keys against global generic category names
+        if (!restrictedOrgs) {
+          for (const [key, value] of Object.entries(categoryAllowlist)) {
+            const gCat = globalCategories.find(g => g.id === key);
+            if (gCat && (gCat.name || '').trim().toLowerCase() === normalizedRole && Array.isArray(value) && value.length > 0) {
+              restrictedOrgs = value;
+              break;
+            }
+          }
+        }
+        
+        if (!restrictedOrgs) {
+          const exactKey = Object.keys(categoryAllowlist).find(k => k.trim().toLowerCase() === normalizedRole);
+          if (exactKey) restrictedOrgs = categoryAllowlist[exactKey];
+        }
+      }
+      if (restrictedOrgs && restrictedOrgs.length === 1) {
+        newClub = restrictedOrgs[0];
+      }
+      
+      // Auto-fill sports
+      let restrictedSports = null;
+      if (categorySports && normalizedRole) {
+        if (catId && categorySports[catId]) restrictedSports = categorySports[catId];
+        
+        if (!restrictedSports) {
+          for (const [key, value] of Object.entries(categorySports)) {
+            const gCat = globalCategories.find(g => g.id === key);
+            if (gCat && (gCat.name || '').trim().toLowerCase() === normalizedRole && Array.isArray(value) && value.length > 0) {
+              restrictedSports = value;
+              break;
+            }
+          }
+        }
+        
+        if (!restrictedSports) {
+          const exactKey = Object.keys(categorySports).find(k => k.trim().toLowerCase() === normalizedRole);
+          if (exactKey) restrictedSports = categorySports[exactKey];
+        }
+      }
+      let newSports = [];
+      if (restrictedSports && restrictedSports.length === 1) {
+        newSports = [restrictedSports[0]];
+      } else if (event?.sportList && event.sportList.length === 1) {
+        newSports = [event.sportList[0]];
+      }
+
+      setFormData((prev) => ({ ...prev, [name]: value, club: newClub, selectedSports: newSports }));
+    } else {
+      setFormData((prev) => ({ ...prev, [name]: value }));
+    }
+    
     if (name === "nationality") {
       setErrors((prev) => ({ ...prev, nationality: null }));
     }
@@ -206,6 +438,14 @@ export default function Register() {
     if (!formData.nationality) newErrors.nationality = "Nationality is required";
     if (!formData.club.trim()) newErrors.club = "Organization/Club/Academy is required";
     if (!formData.role) newErrors.role = "Role is required";
+    const isTeamRole = formData.role && (teamRoles.includes(formData.role.toLowerCase()) || formData.role.toLowerCase().includes("athlete") || formData.role.toLowerCase().includes("coach"));
+    const selectedCat = eventCategories.find(c => c.name === formData.role);
+    const catId = selectedCat ? selectedCat.id : formData.role;
+    const hasCategorySports = categorySports && categorySports[catId] && categorySports[catId].length > 0;
+
+    if ((isTeamRole || hasCategorySports) && event?.sportList && event.sportList.length > 0 && (!formData.selectedSports || formData.selectedSports.length === 0)) {
+      newErrors.sportName = "Sport selection is required";
+    }
     if (!formData.email.trim()) {
       newErrors.email = "Email is required";
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
@@ -251,6 +491,9 @@ export default function Register() {
       const firstDoc = requiredDocs[0];
       const secondDoc = requiredDocs[1];
 
+      // APX-P0: Generate foolproof submission secret
+      const submissionSecret = `apex_v1_${event.id?.substring(0, 8)}`;
+
       await AccreditationsAPI.create({
         eventId: event.id,
         firstName: formData.firstName,
@@ -261,18 +504,31 @@ export default function Register() {
         club: formData.club,
         role: formData.role,
         email: formData.email,
-        photoUrl: firstDoc ? (formData.documents[firstDoc.id] || formData.photo) : formData.photo,
-        idDocumentUrl: secondDoc ? (formData.documents[secondDoc.id] || formData.idDocument) : formData.idDocument
-      });
+        selectedSports: (formData.selectedSports && formData.selectedSports.length > 0) ? formData.selectedSports : (formData.sportName ? [formData.sportName] : []),
+        // APX-Fix: Use actual document IDs from event config, not hardcoded 'picture'/'passport'
+        photoUrl: (firstDoc ? formData.documents[firstDoc.id] : null) || formData.documents['picture'] || formData.photo,
+        idDocumentUrl: (secondDoc ? formData.documents[secondDoc.id] : null) || formData.documents['passport'] || formData.idDocument,
+        eidUrl: formData.documents['eid'] || null,
+        medicalUrl: formData.documents['medical'] || formData.documents['guardian_id'] || null,
+        documents: formData.documents // APX: Pass all documents for storage.js mapping
+      }, submissionSecret);
       setSubmitted(true);
     } catch (error) {
+      console.error("Registration submission error:", error);
       if (error.message && error.message.includes("DUPLICATE_NAME")) {
         setDuplicateError({
           message: `An athlete named "${formData.firstName} ${formData.lastName}" has already registered for this event.`,
           status: "pending"
         });
       } else {
-        setErrors({ submit: "Failed to submit registration. Please try again." });
+        // Surface the exact Supabase error for easier diagnosis
+        const code = error.code ? ` [${error.code}]` : "";
+        const hint = error.hint ? ` — ${error.hint}` : "";
+        const detail = error.details ? ` (${error.details})` : "";
+        const msg = error.message || "Unknown error";
+        setErrors({
+          submit: `Submission failed${code}: ${msg}${hint}${detail}`
+        });
       }
     } finally {
       setSubmitting(false);
@@ -292,23 +548,13 @@ export default function Register() {
   if (loading) {
     return (
       <SwimmingBackground>
-        <div className="min-h-screen flex items-center justify-center p-6">
-          <div className="relative z-10 flex flex-col items-center gap-6">
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-center">
             <div className="relative">
-              <div className="w-16 h-16 rounded-3xl bg-cyan-500/10 border border-cyan-500/20 animate-pulse flex items-center justify-center">
-                <div className="animate-spin w-8 h-8 border-4 border-cyan-500 border-t-transparent rounded-full shadow-lg shadow-cyan-500/20" />
-              </div>
-              <Droplets className="absolute -top-3 -right-3 w-8 h-8 text-cyan-400 animate-bounce" />
-              <div className="absolute -inset-4 bg-cyan-500/10 blur-3xl -z-10 animate-pulse" />
+              <div className="animate-spin w-12 h-12 border-4 border-cyan-500 border-t-transparent rounded-full shadow-lg shadow-cyan-500/20" />
+              <Droplets className="absolute -top-2 -right-2 w-6 h-6 text-cyan-400 animate-bounce" />
             </div>
-            <div className="flex flex-col items-center gap-2">
-              <p className="text-sm font-black text-white uppercase tracking-[0.4em] animate-pulse">
-                Preparing <span className="text-cyan-400">Registration</span>
-              </p>
-              <div className="w-32 h-1 bg-white/5 rounded-full overflow-hidden">
-                <div className="w-full h-full bg-cyan-500 animate-shimmer" style={{ backgroundSize: '200% 100%' }} />
-              </div>
-            </div>
+            <p className="text-lg text-cyan-600 mt-4">Loading event...</p>
           </div>
         </div>
       </SwimmingBackground>
@@ -347,26 +593,26 @@ export default function Register() {
           <motion.div
             initial={{ opacity: 0, scale: 0.98, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            className="relative z-10 w-full max-w-xl"
+            className="relative z-10 w-full max-w-lg"
           >
             {/* Main Card */}
             <div className="bg-white/95 backdrop-blur-2xl border border-white rounded-[2rem] shadow-[0_24px_80px_-16px_rgba(0,0,0,0.25)] overflow-hidden">
               <div className="p-6 md:p-10 text-center">
                 {/* Badge Icon (Reduced size) */}
                 <div className="mb-6 relative inline-block">
-                  <div className="absolute inset-0 bg-amber-500/20 blur-3xl rounded-full" />
-                  <div className="relative w-24 h-24 rounded-3xl bg-amber-500 flex items-center justify-center shadow-lg shadow-amber-500/30 rotate-12">
-                    <AlertCircle className="w-12 h-12 text-white -rotate-12" />
+                  <div className="absolute inset-0 bg-amber-500/20 blur-2xl rounded-full" />
+                  <div className="relative w-16 h-16 rounded-2xl bg-amber-500 flex items-center justify-center shadow-lg shadow-amber-500/30 rotate-12">
+                    <AlertCircle className="w-8 h-8 text-white -rotate-12" />
                   </div>
                 </div>
 
                 {/* Status Header */}
-                <div className="inline-flex items-center gap-3 px-4 py-2 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-700 text-[10px] font-black uppercase tracking-[0.25em] mb-6">
-                  <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-700 text-[9px] font-black uppercase tracking-[0.2em] mb-4">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
                   Registration: Closed
                 </div>
 
-                <h1 className="text-3xl md:text-4xl font-black text-slate-900 mb-3 tracking-tighter uppercase leading-none font-serif">
+                <h1 className="text-2xl md:text-3xl font-black text-slate-900 mb-2 tracking-tight uppercase leading-none">
                   Registration is closed
                 </h1>
                 
@@ -419,7 +665,7 @@ export default function Register() {
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="text-center max-w-md bg-white rounded-2xl p-8 shadow-2xl shadow-cyan-500/30 border-2 border-cyan-200"
+            className="text-center max-w-md bg-base rounded-2xl p-8 shadow-2xl shadow-primary-500/10 border-2 border-border"
           >
             <motion.div
               initial={{ scale: 0 }}
@@ -432,8 +678,8 @@ export default function Register() {
             </motion.div>
             <h1 className="text-2xl font-bold text-slate-800 mb-3">Registration Submitted!</h1>
             <p className="text-lg text-slate-600 mb-6">
-              Your accreditation request for <span className="font-semibold text-cyan-700">{event.name}</span> has been submitted successfully.
-              You will receive an email notification once your application is reviewed.
+              Your accreditation request for <span className="font-semibold text-cyan-700">{event.name}</span> has been successfully submitted.
+              You will receive an email notification within 24 hours confirming whether your accreditation has been approved or rejected. Please make sure to check your spam/junk folder as well.
             </p>
             <div className="bg-white border-2 border-cyan-200 rounded-xl p-4 shadow-inner">
               <p className="text-lg text-slate-500 mb-1">Reference Email</p>
@@ -456,7 +702,10 @@ export default function Register() {
 
   return (
     <SwimmingBackground>
-      <div id="register_page" className="min-h-screen relative py-8 px-4">
+      <div id="register_page" className="min-h-screen relative py-8 px-4 text-main font-body">
+        <div className="absolute top-4 right-4 z-50">
+          <ThemeToggle />
+        </div>
         <div className="absolute top-20 right-10 opacity-20 pointer-events-none">
           <Droplets className="w-12 h-12 text-cyan-500 animate-bounce" style={{ animationDuration: "3s" }} />
         </div>
@@ -489,10 +738,13 @@ export default function Register() {
               </div>
             )}
 
-            <h1 className="text-2xl lg:text-3xl text-white font-bold drop-shadow-lg">
-              Accreditation Registration Form
+            <h1 className="text-3xl lg:text-4xl text-main font-black drop-shadow-sm mb-2 transition-colors">
+              {event.name}
             </h1>
-            <p className="text-xl text-white/90 mt-3 font-medium drop-shadow-md">
+            <h2 className="text-xl lg:text-2xl text-cyan-100 font-bold drop-shadow-md">
+              Accreditation Registration Form
+            </h2>
+            <p className="text-lg text-white/90 mt-4 font-medium drop-shadow-md">
               {event.location} • {formatDateDisplay(event.startDate)} to {formatDateDisplay(event.endDate)}
             </p>
           </motion.div>
@@ -503,7 +755,7 @@ export default function Register() {
             transition={{ delay: 0.1 }}
             onSubmit={handleSubmit}
             noValidate
-            className="bg-white/90 backdrop-blur-xl border border-cyan-300 rounded-2xl p-6 lg:p-8 space-y-6 shadow-2xl shadow-cyan-500/30 relative overflow-hidden"
+            className="bg-white light-form border border-border/50 rounded-2xl p-6 lg:p-8 space-y-6 shadow-2xl relative overflow-hidden transition-colors"
           >
             <div className="absolute top-0 left-1/3 w-px h-full bg-gradient-to-b from-cyan-200/0 via-cyan-200/20 to-cyan-200/0 pointer-events-none" />
             <div className="absolute top-0 right-1/3 w-px h-full bg-gradient-to-b from-cyan-200/0 via-cyan-200/20 to-cyan-200/0 pointer-events-none" />
@@ -530,7 +782,7 @@ export default function Register() {
               </motion.div>
             )}
 
-            <div className="space-y-4 relative z-10">
+            <div className="space-y-4 relative z-50">
               <h2 className="text-2xl font-bold text-cyan-700 flex items-center gap-2">
                 <User className="w-6 h-6 text-cyan-600" />
                 Personal Information
@@ -557,7 +809,6 @@ export default function Register() {
                   light
                 />
               </div>
-
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <Select
                   label="Gender"
@@ -584,61 +835,8 @@ export default function Register() {
                   light
                 />
               </div>
-            </div>
 
-            <div className="space-y-4 relative z-50">
-              <h2 className="text-2xl font-bold text-cyan-700 flex items-center gap-2">
-                <Flag className="w-6 h-6 text-cyan-600" />
-                Affiliation
-              </h2>
-
-              {/* REORDERED: Category/Role first */}
-              <div className="relative z-[30]">
-                <Select
-                  label="Category/Role"
-                  name="role"
-                  value={formData.role}
-                  onChange={handleInputChange}
-                  error={errors.role}
-                  required
-                  light
-                  placeholder="Select category/role"
-                  options={getRoleOptions()}
-                />
-              </div>
-
-              {/* Organization/Club/Academy second */}
-              <div className="relative z-[20]">
-                {formData.role && (teamRoles.includes(formData.role.toLowerCase()) || formData.role.toLowerCase().includes("athlete") || formData.role.toLowerCase().includes("coach")) && clubs.length > 0 ? (
-                  <SearchableSelect
-                    label="Organization/Club/Academy"
-                    value={formData.club}
-                    onChange={(e) => handleInputChange({ target: { name: "club", value: e.target.value } })}
-                    error={errors.club}
-                    required
-                    options={clubs.map(c => {
-                      const name = typeof c === 'string' ? c : (c?.full || c?.short);
-                      return name ? { value: name, label: name } : null;
-                    }).filter(Boolean)}
-                    placeholder="Select organization, club or academy"
-                    light
-                  />
-                ) : (
-                  <Input
-                    label="Organization/Club/Academy"
-                    name="club"
-                    value={formData.club}
-                    onChange={handleInputChange}
-                    error={errors.club}
-                    required
-                    placeholder="Enter organization, club or academy"
-                    light
-                  />
-                )}
-              </div>
-
-              {/* Nationality last - full width for emphasis */}
-              <div className="relative z-[10]">
+              <div className="relative z-[60]">
                 <SearchableSelect
                   label="Nationality"
                   value={formData.nationality}
@@ -653,16 +851,202 @@ export default function Register() {
               </div>
             </div>
 
-            {/* Event Details section — shown only when Athlete role is selected and sport events exist */}
-            {formData.role && formData.role.toLowerCase().includes("athlete") && sportEvents.length > 0 && (
-              <EventScheduleDropdown
-                sportEvents={sportEvents}
-                selectedSportEvents={selectedSportEvents}
-                setSelectedSportEvents={setSelectedSportEvents}
-              />
-            )}
+            <div className="space-y-4 relative z-40">
+              <h2 className="text-2xl font-bold text-cyan-700 flex items-center gap-2">
+                <Flag className="w-6 h-6 text-cyan-600" />
+                Affiliation
+              </h2>
 
-            <div className="space-y-4 relative z-[1]">
+              {/* Category/Role */}
+              <div className="relative z-[30]">
+                <Select
+                  label="Category/Role"
+                  name="role"
+                  value={formData.role}
+                  onChange={handleInputChange}
+                  error={errors.role}
+                  required
+                  light
+                  placeholder="Select category/role"
+                  options={getRoleOptions()}
+                />
+              </div>
+
+              <div className="relative z-[20]">
+                {(() => {
+                  const normalizedRole = (formData.role || '').trim().toLowerCase();
+                  const selectedCat = eventCategories.find(c => (c.name || '').trim().toLowerCase() === normalizedRole);
+                  const catId = selectedCat ? selectedCat.id : null;
+                  
+                  let restrictedOrgs = null;
+                  if (categoryAllowlist && normalizedRole) {
+                    if (catId && categoryAllowlist[catId]) restrictedOrgs = categoryAllowlist[catId];
+                    
+                    if (!restrictedOrgs) {
+                      for (const [key, value] of Object.entries(categoryAllowlist)) {
+                        const gCat = globalCategories.find(g => g.id === key);
+                        if (gCat && (gCat.name || '').trim().toLowerCase() === normalizedRole && Array.isArray(value) && value.length > 0) {
+                          restrictedOrgs = value;
+                          break;
+                        }
+                      }
+                    }
+                    
+                    if (!restrictedOrgs) {
+                      const exactKey = Object.keys(categoryAllowlist).find(k => k.trim().toLowerCase() === normalizedRole);
+                      if (exactKey) restrictedOrgs = categoryAllowlist[exactKey];
+                    }
+                  }
+                  
+                  return (
+                    <>
+                      {(() => {
+                        if (restrictedOrgs && restrictedOrgs.length > 0) {
+                          if (restrictedOrgs.length === 1) {
+                            return (
+                              <Input
+                                label="Organization/Club/Academy *"
+                                name="club"
+                                value={formData.club || restrictedOrgs[0]}
+                                onChange={handleInputChange}
+                                error={errors.club}
+                                required
+                                disabled
+                                light
+                              />
+                            );
+                          }
+                          return (
+                            <SearchableSelect
+                              label="Organization/Club/Academy *"
+                              value={formData.club}
+                              onChange={(e) => handleInputChange({ target: { name: "club", value: e.target.value } })}
+                              error={errors.club}
+                              required
+                              light
+                              placeholder="Search and select..."
+                              options={restrictedOrgs.map((c) => ({ value: c, label: c }))}
+                            />
+                          );
+                        }
+                        
+                        if (formData.role && (teamRoles.includes(formData.role.toLowerCase()) || formData.role.toLowerCase().includes("athlete") || formData.role.toLowerCase().includes("coach")) && clubs.length > 0) {
+                          return (
+                            <SearchableSelect
+                              label="Organization/Club/Academy *"
+                              value={formData.club}
+                              onChange={(e) => handleInputChange({ target: { name: "club", value: e.target.value } })}
+                              error={errors.club}
+                              required
+                              options={clubs.map(c => {
+                                const name = typeof c === 'string' ? c : (c?.full || c?.short);
+                                return name ? { value: name, label: name } : null;
+                              }).filter(Boolean)}
+                              placeholder="Select organization, club or academy"
+                              light
+                            />
+                          );
+                        }
+
+                        return (
+                          <Input
+                            label="Organization/Club/Academy"
+                            name="club"
+                            value={formData.club}
+                            onChange={handleInputChange}
+                            error={errors.club}
+                            required
+                            placeholder="Enter organization, club or academy"
+                            light
+                          />
+                        );
+                      })()}
+                    </>
+                  );
+
+                  return (
+                    <Input
+                      label="Organization/Club/Academy"
+                      name="club"
+                      value={formData.club}
+                      onChange={handleInputChange}
+                      error={errors.club}
+                      required
+                      placeholder="Enter organization, club or academy"
+                      light
+                    />
+                  );
+                })()}
+              </div>
+
+              {/* Participating Sport (Moved & Conditioned to Team roles) */}
+              {(() => {
+                const isTeamRole = formData.role && (teamRoles.includes(formData.role.toLowerCase()) || formData.role.toLowerCase().includes("athlete") || formData.role.toLowerCase().includes("coach"));
+                
+                const normalizedRole = (formData.role || '').trim().toLowerCase();
+                const selectedCat = eventCategories.find(c => (c.name || '').trim().toLowerCase() === normalizedRole);
+                const catId = selectedCat ? selectedCat.id : null;
+                
+                let restrictedSports = null;
+                if (categorySports && normalizedRole) {
+                  if (catId && categorySports[catId]) restrictedSports = categorySports[catId];
+                  if (!restrictedSports) {
+                    const exactKey = Object.keys(categorySports).find(k => k.trim().toLowerCase() === normalizedRole);
+                    if (exactKey) restrictedSports = categorySports[exactKey];
+                  }
+                }
+
+                if ((isTeamRole || (restrictedSports && restrictedSports.length > 0)) && event?.sportList && event.sportList.length > 0) {
+                  const availableSports = restrictedSports && restrictedSports.length > 0 ? restrictedSports : event.sportList;
+                  
+                  if (availableSports.length === 1) {
+                    return (
+                      <div className="relative z-[15] space-y-2">
+                        <Input
+                          label="Participating Sports *"
+                          name="sportName"
+                          value={availableSports[0]}
+                          onChange={() => {}}
+                          disabled
+                          light
+                        />
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="relative z-[15] space-y-2">
+                      <label className="block text-sm font-bold text-slate-500 uppercase tracking-widest px-1">Participating Sports *</label>
+                      <MultiSearchableSelect
+                        options={availableSports.map(s => ({ value: s, label: s }))}
+                        value={formData.selectedSports || []}
+                        onChange={(val) => setFormData(prev => ({ ...prev, selectedSports: val }))}
+                        placeholder="Select your sport(s)"
+                        error={errors.sportName}
+                        light
+                      />
+                      {errors.sportName && <p className="text-red-500 text-xs px-1">{errors.sportName}</p>}
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
+              {/* Event Details section — shown only when Athlete role is selected and sport events exist */}
+              {formData.role && formData.role.toLowerCase().includes("athlete") && sportEvents.length > 0 && (
+                <div className="relative z-[10]">
+                  <EventScheduleDropdown
+                    sportEvents={sportEvents}
+                    selectedSportEvents={selectedSportEvents}
+                    setSelectedSportEvents={setSelectedSportEvents}
+                  />
+                </div>
+              )}
+            </div>
+
+
+
+            <div className="space-y-4 relative z-30">
               <h2 className="text-2xl font-bold text-cyan-700 flex items-center gap-2">
                 <Mail className="w-6 h-6 text-cyan-600" />
                 Contact
@@ -681,45 +1065,48 @@ export default function Register() {
               />
             </div>
 
-            <div className="space-y-4 relative z-[1]">
-              <h2 className="text-2xl font-bold text-cyan-700 flex items-center gap-2">
-                <Upload className="w-6 h-6 text-cyan-600" />
-                Documents
-              </h2>
+            {/* Documents - ONLY SHOWN AFTER ROLE IS SELECTED */}
+            {formData.role && (
+              <div className="space-y-4 relative z-20">
+                <h2 className="text-2xl font-bold text-cyan-700 flex items-center gap-2">
+                  <Upload className="w-6 h-6 text-cyan-600" />
+                  Documents
+                </h2>
 
-              <div className="space-y-4">
-                {requiredDocuments.map((doc) => (
-                  <div key={doc.id}>
-                    <label className="block text-lg font-medium text-slate-700 mb-1.5">
-                      {doc.label} (JPEG, PNG{doc.accept.includes("pdf") ? ", PDF" : ""} - Max 5MB)
-                    </label>
-                    <div className="relative">
-                      <input
-                        type="file"
-                        accept={doc.accept}
-                        onChange={(e) => handleDocumentFileChange(e, doc.id)}
-                        className="w-full text-lg text-slate-600 file:mr-4 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-lg file:font-medium file:bg-gradient-to-r file:from-cyan-500 file:to-blue-600 file:text-white hover:file:from-cyan-600 hover:file:to-blue-700 file:cursor-pointer cursor-pointer py-2"
-                      />
+                <div className="space-y-4">
+                  {getRequiredDocuments().map((doc) => (
+                    <div key={doc.id}>
+                      <label className="block text-lg font-medium text-slate-700 mb-1.5">
+                        {doc.label} ({doc.format || (doc.accept.includes("pdf") ? "JPEG, PNG, PDF" : "JPEG, PNG")} - Max 5MB)
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="file"
+                          accept={doc.accept}
+                          onChange={(e) => handleDocumentFileChange(e, doc.id)}
+                          className="w-full text-lg text-slate-600 file:mr-4 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-lg file:font-medium file:bg-gradient-to-r file:from-cyan-500 file:to-blue-600 file:text-white hover:file:from-cyan-600 hover:file:to-blue-700 file:cursor-pointer cursor-pointer py-2"
+                        />
+                      </div>
+                      {uploadingDocs[doc.id] && (
+                        <p className="text-lg text-amber-500 mt-1 flex items-center gap-1">
+                          <Loader2 className="w-4 h-4 animate-spin" /> Uploading...
+                        </p>
+                      )}
+                      {errors[`doc_${doc.id}`] && (
+                        <p className="text-lg text-red-500 mt-1">{errors[`doc_${doc.id}`]}</p>
+                      )}
+                      {formData.documents[doc.id] && (
+                        <p className="text-lg text-emerald-600 mt-1 flex items-center gap-1">
+                          <CheckCircle className="w-4 h-4" /> {doc.label} uploaded
+                        </p>
+                      )}
                     </div>
-                    {uploadingDocs[doc.id] && (
-                      <p className="text-lg text-amber-500 mt-1 flex items-center gap-1">
-                        <Loader2 className="w-4 h-4 animate-spin" /> Uploading...
-                      </p>
-                    )}
-                    {errors[`doc_${doc.id}`] && (
-                      <p className="text-lg text-red-500 mt-1">{errors[`doc_${doc.id}`]}</p>
-                    )}
-                    {formData.documents[doc.id] && (
-                      <p className="text-lg text-emerald-600 mt-1 flex items-center gap-1">
-                        <CheckCircle className="w-4 h-4" /> {doc.label} uploaded
-                      </p>
-                    )}
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
-            <div className="flex items-start gap-3 p-4 bg-gradient-to-r from-cyan-50 to-blue-50 rounded-lg border border-cyan-200 relative z-[1]">
+            <div className="flex items-start gap-3 p-4 bg-gradient-to-r from-cyan-50 to-blue-50 rounded-lg border border-cyan-200 relative z-10">
               <input
                 type="checkbox"
                 id="terms"
@@ -730,10 +1117,11 @@ export default function Register() {
                     setErrors((prev) => ({ ...prev, terms: null }));
                   }
                 }}
-                className="mt-1.5 w-6 h-6 rounded border-cyan-300 bg-white text-cyan-500 focus:ring-cyan-400/50 cursor-pointer"
+                className={`mt-1.5 w-6 h-6 rounded border-cyan-300 bg-white text-cyan-500 focus:ring-cyan-400/50 ${!hasViewedTerms ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                disabled={!hasViewedTerms}
               />
               <div>
-                <label htmlFor="terms" className="text-lg text-slate-700 cursor-pointer block">
+                <label htmlFor="terms" className={`text-lg transition-colors ${!hasViewedTerms ? 'text-slate-400 cursor-not-allowed' : 'text-slate-700 cursor-pointer'} block`}>
                   I confirm that all information provided is accurate and I agree to the{" "}
                   <button
                     type="button"
@@ -742,6 +1130,7 @@ export default function Register() {
                   >
                     Terms and Conditions
                   </button>
+                  {!hasViewedTerms && <span className="text-sm text-cyan-600 ml-2 animate-pulse">(Click to read & unlock)</span>}
                 </label>
                 {errors.terms && (
                   <p className="text-lg text-red-500 mt-1">{errors.terms}</p>
@@ -766,30 +1155,12 @@ export default function Register() {
           </motion.form>
         </div>
 
-        <Modal
+        <TermsModal
           isOpen={termsModalOpen}
           onClose={() => setTermsModalOpen(false)}
-          title="Terms and Conditions"
-          light
-        >
-          <div className="p-6 space-y-4 text-slate-600">
-            <p className="text-lg">
-              1. By registering for this event, you certify that you are in good health and physically capable of participating in activities.
-            </p>
-            <p className="text-lg">
-              2. You permit the use of your name and image in broadcasts, telecasts, and promotional materials related to the competition.
-            </p>
-            <p className="text-lg">
-              3. The organizers are not liable for any personal injury or property loss during the event. Proper attire and safety equipment must be used.
-            </p>
-            <p className="text-lg">
-              4. You agree to follow all rules, safety guidelines, and instructions provided by event officials.
-            </p>
-            <div className="pt-4 flex justify-end">
-              <Button onClick={() => setTermsModalOpen(false)}>Close</Button>
-            </div>
-          </div>
-        </Modal>
+          onAccept={() => setHasViewedTerms(true)}
+          content={event?.termsAndConditions}
+        />
       </div>
     </SwimmingBackground>
   );
@@ -816,11 +1187,11 @@ function EventScheduleDropdown({ sportEvents, selectedSportEvents, setSelectedSp
 
   return (
     <div className="space-y-3 relative z-[1]">
-      <h2 className="text-2xl font-bold text-cyan-700 flex items-center gap-2">
-        <Calendar className="w-6 h-6 text-cyan-600" />
+      <h2 className="text-2xl font-bold text-primary-600 dark:text-primary-400 flex items-center gap-2">
+        <Calendar className="w-6 h-6 text-primary-500" />
         Event Schedule
       </h2>
-      <p className="text-lg text-slate-600 font-extralight">
+      <p className="text-lg text-muted font-extralight">
         Select the events you want to participate in:
       </p>
 
@@ -828,9 +1199,9 @@ function EventScheduleDropdown({ sportEvents, selectedSportEvents, setSelectedSp
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full px-4 py-3 rounded-xl border-2 border-cyan-300 bg-white text-left flex items-center justify-between transition-all hover:border-cyan-400 focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500"
+        className="w-full px-4 py-3 rounded-xl border-2 border-border bg-base text-left flex items-center justify-between transition-all hover:border-primary-500/50 focus:ring-2 focus:ring-primary-500/30"
       >
-        <span className="text-slate-700 font-medium text-lg">
+        <span className="text-main font-medium text-lg">
           {selectedSportEvents.length > 0
             ? `${selectedSportEvents.length} event${selectedSportEvents.length !== 1 ? "s" : ""} selected`
             : "Tap to select events"
@@ -838,11 +1209,11 @@ function EventScheduleDropdown({ sportEvents, selectedSportEvents, setSelectedSp
         </span>
         <div className="flex items-center gap-2">
           {selectedSportEvents.length > 0 && (
-            <span className="bg-cyan-500 text-white text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full">
+            <span className="bg-primary-500 text-white text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full shadow-sm">
               {selectedSportEvents.length}
             </span>
           )}
-          <svg className={`w-5 h-5 text-slate-400 transition-transform ${isOpen ? "rotate-180" : ""}`} viewBox="0 0 20 20" fill="currentColor">
+          <svg className={`w-5 h-5 text-muted transition-transform ${isOpen ? "rotate-180" : ""}`} viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
           </svg>
         </div>
@@ -850,19 +1221,19 @@ function EventScheduleDropdown({ sportEvents, selectedSportEvents, setSelectedSp
 
       {/* Dropdown Panel */}
       {isOpen && (
-        <div className="border-2 border-cyan-300 rounded-xl bg-white overflow-hidden shadow-lg shadow-cyan-100/50">
+        <div className="border-2 border-border rounded-xl bg-base overflow-hidden shadow-xl">
           {/* Search Input */}
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-cyan-100 bg-cyan-50/50">
-            <Search className="w-4 h-4 text-cyan-500 flex-shrink-0" />
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-base-alt">
+            <Search className="w-4 h-4 text-primary-500 flex-shrink-0" />
             <input
               type="text"
               placeholder="Search events..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="flex-1 bg-transparent text-lg text-slate-800 placeholder-slate-400 focus:outline-none"
+              className="flex-1 bg-transparent text-lg text-main placeholder-muted focus:outline-none"
             />
             {search && (
-              <button type="button" onClick={() => setSearch("")} className="p-1 text-slate-400 hover:text-slate-600">
+              <button type="button" onClick={() => setSearch("")} className="p-1 text-muted hover:text-main">
                 <X className="w-4 h-4" />
               </button>
             )}
@@ -870,23 +1241,23 @@ function EventScheduleDropdown({ sportEvents, selectedSportEvents, setSelectedSp
 
           {/* Event List */}
           <div className="relative">
-            <div className="max-h-52 overflow-y-auto overscroll-contain divide-y divide-cyan-50">
+            <div className="max-h-52 overflow-y-auto overscroll-contain divide-y divide-border">
               {filtered.length > 0 ? filtered.map((ev, i) => {
                 const isSelected = selectedSportEvents.some(s => s.eventCode === ev.eventCode);
                 return (
                   <div
                     key={ev.id || i}
                     onClick={() => toggleEvent(ev)}
-                    className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors active:bg-cyan-100 ${
+                    className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors active:bg-primary-500/10 ${
                       isSelected
-                        ? "bg-cyan-50"
-                        : "hover:bg-slate-50"
+                        ? "bg-primary-500/5"
+                        : "hover:bg-base-alt"
                     }`}
                   >
                     <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
                       isSelected
-                        ? "border-cyan-500 bg-cyan-500"
-                        : "border-slate-300 bg-white"
+                        ? "border-primary-500 bg-primary-500"
+                        : "border-border bg-base"
                     }`}>
                       {isSelected && (
                         <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
@@ -897,14 +1268,14 @@ function EventScheduleDropdown({ sportEvents, selectedSportEvents, setSelectedSp
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         {ev.eventCode && (
-                          <span className="text-xs font-bold text-cyan-600 bg-cyan-100 px-1.5 py-0.5 rounded">{ev.eventCode}</span>
+                          <span className="text-xs font-bold text-primary-600 dark:text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded">{ev.eventCode}</span>
                         )}
-                        <span className={`text-lg truncate ${isSelected ? "text-cyan-800 font-medium" : "text-slate-700 font-normal"}`}>
+                        <span className={`text-lg truncate ${isSelected ? "text-primary-600 dark:text-primary-400 font-medium" : "text-main font-normal"}`}>
                           {ev.eventName}
                         </span>
                       </div>
                       {(ev.gender || ev.date) && (
-                        <p className="text-sm text-slate-400 mt-0.5">
+                        <p className="text-sm text-muted mt-0.5">
                           {[ev.gender, ev.date].filter(Boolean).join(" • ")}
                         </p>
                       )}
@@ -912,20 +1283,16 @@ function EventScheduleDropdown({ sportEvents, selectedSportEvents, setSelectedSp
                   </div>
                 );
               }) : (
-                <div className="px-4 py-6 text-center text-slate-400 text-lg">
+                <div className="px-4 py-6 text-center text-muted text-lg">
                   No events matching "{search}"
                 </div>
               )}
             </div>
-            {/* Scroll fade indicator */}
-            {filtered.length > 4 && (
-              <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-white to-transparent pointer-events-none" />
-            )}
           </div>
 
           {/* Footer */}
-          <div className="px-4 py-2.5 border-t border-cyan-100 bg-cyan-50/30 flex items-center justify-between">
-            <span className="text-sm text-slate-500">
+          <div className="px-4 py-2.5 border-t border-border bg-base-alt flex items-center justify-between">
+            <span className="text-sm text-muted">
               {filtered.length} event{filtered.length !== 1 ? "s" : ""} available
             </span>
             {selectedSportEvents.length > 0 && (
@@ -947,13 +1314,13 @@ function EventScheduleDropdown({ sportEvents, selectedSportEvents, setSelectedSp
           {selectedSportEvents.map(ev => (
             <span
               key={ev.eventCode}
-              className="inline-flex items-center gap-1 bg-cyan-100 text-cyan-800 text-sm font-medium pl-3 pr-1.5 py-1.5 rounded-full border border-cyan-200"
+              className="inline-flex items-center gap-1 bg-primary-500/10 text-primary-700 dark:text-primary-400 text-sm font-medium pl-3 pr-1.5 py-1.5 rounded-full border border-primary-500/20"
             >
               {ev.eventCode ? `${ev.eventCode} – ` : ""}{ev.eventName}
               <button
                 type="button"
                 onClick={() => toggleEvent(ev)}
-                className="p-0.5 rounded-full hover:bg-cyan-200 transition-colors ml-1"
+                className="p-0.5 rounded-full hover:bg-primary-500/20 transition-colors ml-1"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

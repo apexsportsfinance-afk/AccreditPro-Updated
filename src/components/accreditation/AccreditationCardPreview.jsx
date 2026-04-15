@@ -6,13 +6,13 @@ const CARD_FONT_SIZE = 11;
 
 const roleColors = {
   athlete: { bg: "bg-gradient-to-r from-blue-600 via-blue-500 to-cyan-500", hex: "#2563eb" },
-  coach: { bg: "bg-gradient-to-r from-teal-600 via-teal-500 to-emerald-500", hex: "#0d9488" },
-  media: { bg: "bg-gradient-to-r from-amber-600 via-amber-500 to-yellow-500", hex: "#d97706" },
-  official: { bg: "bg-gradient-to-r from-violet-600 via-violet-500 to-purple-500", hex: "#7c3aed" },
-  medical: { bg: "bg-gradient-to-r from-rose-600 via-rose-500 to-pink-500", hex: "#e11d48" },
-  staff: { bg: "bg-gradient-to-r from-slate-600 via-slate-500 to-gray-500", hex: "#475569" },
-  vip: { bg: "bg-gradient-to-r from-amber-700 via-amber-600 to-yellow-600", hex: "#b45309" },
-  organizer: { bg: "bg-gradient-to-r from-emerald-600 via-emerald-500 to-green-500", hex: "#059669" }
+  coach: { bg: "bg-gradient-to-r from-sky-600 via-sky-500 to-cyan-400", hex: "#0284c7" },
+  media: { bg: "bg-gradient-to-r from-indigo-600 via-indigo-500 to-blue-500", hex: "#4f46e5" },
+  official: { bg: "bg-gradient-to-r from-cyan-600 via-cyan-500 to-teal-400", hex: "#0891b2" },
+  medical: { bg: "bg-gradient-to-r from-slate-700 via-slate-600 to-slate-500", hex: "#475569" },
+  staff: { bg: "bg-gradient-to-r from-blue-800 via-blue-700 to-blue-600", hex: "#1d4ed8" },
+  vip: { bg: "bg-gradient-to-r from-teal-600 via-teal-500 to-emerald-400", hex: "#0d9488" },
+  organizer: { bg: "bg-gradient-to-r from-cyan-800 via-cyan-700 to-cyan-600", hex: "#0e7490" }
 };
 
 const getRoleData = (role) => {
@@ -180,16 +180,22 @@ const AquaticsHeader = memo(function AquaticsHeader({ event }) {
   );
 });
 
-export const CardInner = memo(function CardInner({ accreditation, event, zones = [], eventCategories = [], idSuffix = "" }) {
+export const CardInner = memo(function CardInner({ accreditation, event, zones = [], eventCategories = [], idSuffix = "", frontBackgroundUrl = "" }) {
   const categoryColor = resolveCategoryColor(accreditation?.role, eventCategories);
   const matchingZone = zones.find(z => z.name?.toLowerCase() === accreditation?.role?.toLowerCase());
   const zoneColor = matchingZone?.color || null;
-  const resolvedColor = categoryColor || zoneColor || null;
+  
+  // Custom manual roles won't match a category, so we consume the user-entered badgeColor.
+  // Standard roles will successfully resolve a categoryColor over the manual variable.
+  const resolvedColor = categoryColor || zoneColor || accreditation?.badgeColor || null;
   const roleData = resolvedColor ? { bg: "", hex: resolvedColor } : getRoleData(accreditation?.role);
   const finalColor = resolvedColor || roleData.hex;
 
   const zoneCodes = accreditation?.zoneCode?.split(",").map(z => z.trim()).filter(Boolean) || [];
-  const countryData = COUNTRIES.find(c => c.code === accreditation?.nationality);
+  const countryData = COUNTRIES.find(c => 
+    c.code?.toUpperCase() === accreditation?.nationality?.toUpperCase() || 
+    c.name?.toLowerCase() === accreditation?.nationality?.toLowerCase()
+  );
   const countryName = getCountryName(accreditation?.nationality);
   const isAthlete = accreditation?.role?.toLowerCase() === "athlete";
   const age = isAthlete && accreditation?.dateOfBirth && event?.ageCalculationYear
@@ -255,8 +261,9 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
   const cardFont = { fontFamily: CARD_FONT };
 
   return (
-    <>
-      {/* FRONT CARD */}
+    <div className="cut-here-line" style={{ display: "flex", gap: "20px" }}>
+      {/* FRONT CARD CONTAINER */}
+      <div className="qr-print-preview" style={{ padding: "8px", background: "white", borderRadius: "8px", boxShadow: "0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1)", border: "1px dashed #cbd5e1" }}>
       <div
         id={`accreditation-front-card${idSuffix}`}
         data-accreditation-id={accreditation?.accreditationId || accreditation?.badgeNumber || accreditation?.id || ""}
@@ -279,6 +286,24 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
           </div>
         )}
 
+        {frontBackgroundUrl && (
+          <img 
+            src={frontBackgroundUrl} 
+            alt="Front Background" 
+            style={{ 
+              position: "absolute", 
+              top: "146px", 
+              left: 0, 
+              width: "100%", 
+              height: "calc(100% - 146px)", 
+              objectFit: "cover", 
+              opacity: 0.12,
+              zIndex: 0 
+            }} 
+            crossOrigin="anonymous" 
+          />
+        )}
+
         <AquaticsHeader event={event} />
         <div style={{ height: "6px", backgroundColor: "white", flexShrink: 0 }} />
 
@@ -294,7 +319,7 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
         </div>
 
         {/* BODY */}
-        <div style={{ display: "flex", flex: 1, padding: "10px 12px 0px 12px", position: "relative", zIndex: 10, minHeight: 0, backgroundColor: "white", overflow: "hidden", alignItems: "flex-start" }}>
+        <div style={{ display: "flex", flex: 1, padding: "10px 12px 0px 12px", position: "relative", zIndex: 10, minHeight: 0, backgroundColor: frontBackgroundUrl ? "transparent" : "white", overflow: "hidden", alignItems: "flex-start" }}>
           {/* LEFT: Photo + ID */}
           <div style={{ width: "110px", display: "flex", flexDirection: "column", alignItems: "flex-start", flexShrink: 0 }}>
             <div style={{ width: "100px", height: "120px", border: "2px solid #cbd5e1", padding: "2px", backgroundColor: "white", boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)", flexShrink: 0 }}>
@@ -339,9 +364,10 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
             </div>
             {/* Dynamic Flag & Country Name */}
             {(() => {
-              const flagWidth = 62;
-              const flagHeight = 40;
-              const nameSize = 15;
+              const isShortName = countryName?.length < 12;
+              const flagWidth = isShortName ? 62 : 52;
+              const flagHeight = isShortName ? 40 : 34;
+              const nameSize = isShortName ? 15 : 12;
 
               return (
                 <div style={{ marginTop: "18px", display: "flex", alignItems: "center", gap: "12px" }}>
@@ -377,7 +403,7 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
         </div>
 
         {/* QR CODE + ZONE BADGES — 84px white strip */}
-        <div style={{ height: "84px", width: "100%", backgroundColor: "white", display: "flex", alignItems: "center", padding: "4px 12px 4px 12px", gap: "10px", flexShrink: 0 }}>
+        <div style={{ height: "84px", width: "100%", backgroundColor: frontBackgroundUrl ? "transparent" : "white", display: "flex", alignItems: "center", padding: "4px 12px 4px 12px", gap: "10px", flexShrink: 0, position: "relative", zIndex: 10 }}>
           {/* QR Code — bottom-left */}
           <div style={{ flexShrink: 0 }}>
             {qrDataUrl ? (
@@ -434,11 +460,15 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
         </div>
 
         {/* SPONSORS */}
-        <div style={{ height: "36px", width: "100%", borderTop: "1px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "center", gap: "12px", padding: "0 12px", flexShrink: 0, backgroundColor: "#f8fafc" }}>
+        <div style={{ height: "46px", width: "100%", borderTop: "1px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "center", gap: "12px", padding: "0 12px", flexShrink: 0, backgroundColor: frontBackgroundUrl ? "transparent" : "#f8fafc", position: "relative", zIndex: 10 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "12px", width: "100%", height: "100%" }}>
             {event?.sponsorLogos?.length > 0 ? (
               event.sponsorLogos.slice(0, 6).map((logo, index) => (
-                logo ? <img key={index} src={logo} alt="Sponsor" style={{ height: "26px", maxWidth: "50px", objectFit: "contain" }} crossOrigin="anonymous" /> : null
+                logo ? (
+                  <div key={index} style={{ flex: 1, minWidth: 0, maxWidth: "65px", height: "38px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <img src={logo} alt="Sponsor" style={{ width: "100%", height: "100%", objectFit: "contain" }} crossOrigin="anonymous" />
+                  </div>
+                ) : null
               ))
             ) : (
               <span style={{ fontSize: "8px", color: "#94a3b8", fontStyle: "italic", ...cardFont }}>Sponsors</span>
@@ -446,8 +476,10 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
           </div>
         </div>
       </div>
+      </div>
 
-      {/* BACK CARD */}
+      {/* BACK CARD CONTAINER */}
+      <div className="qr-print-preview" style={{ padding: "8px", background: "white", borderRadius: "8px", boxShadow: "0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1)", border: "1px dashed #cbd5e1" }}>
       <div
         id={`accreditation-back-card${idSuffix}`}
         style={{
@@ -457,7 +489,7 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
           borderRadius: "0", boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
           overflow: "hidden", flexShrink: 0,
           border: "1px solid #334155", position: "relative",
-          marginLeft: "20px", boxSizing: "border-box", flexGrow: 0,
+          boxSizing: "border-box", flexGrow: 0,
           ...cardFont
         }}
       >
@@ -526,15 +558,16 @@ export const CardInner = memo(function CardInner({ accreditation, event, zones =
           </div>
         )}
       </div>
-    </>
+      </div>
+    </div>
   );
 });
 
-const AccreditationCardPreview = memo(function AccreditationCardPreview({ accreditation, event, zones = [], eventCategories = [] }) {
+const AccreditationCardPreview = memo(function AccreditationCardPreview({ accreditation, event, zones = [], eventCategories = [], frontBackgroundUrl = "" }) {
   return (
     <div id="accreditation-card-preview" style={{ display: "inline-block", fontFamily: '"Gill Sans MT", "Gill Sans", Calibri, sans-serif' }}>
       <div style={{ display: "flex", flexDirection: "row", gap: "24px", alignItems: "flex-start" }}>
-        <CardInner accreditation={accreditation} event={event} zones={zones} eventCategories={eventCategories} idSuffix="" />
+        <CardInner accreditation={accreditation} event={event} zones={zones} eventCategories={eventCategories} idSuffix="" frontBackgroundUrl={frontBackgroundUrl} />
       </div>
     </div>
   );
