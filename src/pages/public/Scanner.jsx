@@ -374,7 +374,7 @@ export default function ScannerPage() {
       TicketingAPI.recordGenericEntry(config.eventId, guestNamePart, config.deviceLabel || "Generic Gate")
         .catch(e => console.warn("Attendance record failed for generic pass", e));
 
-      resultTimerRef.current = setTimeout(resumeScanner, 5000);
+      resultTimerRef.current = setTimeout(resumeScanner, 8000);
       return;
     }
 
@@ -437,7 +437,7 @@ export default function ScannerPage() {
             });
             // Play entry success sound
             audioService.playSuccessEntry();
-            resultTimerRef.current = setTimeout(resumeScanner, 5000);
+            resultTimerRef.current = setTimeout(resumeScanner, 8000);
           }
         } catch (redeemErr) {
           const msg = redeemErr.message || "";
@@ -527,8 +527,8 @@ export default function ScannerPage() {
         // Play entry success sound
         audioService.playSuccessEntry();
 
-        // SUPER-FAST AUTO-RESUME: 2.0s for High-Traffic Gates (Optimized)
-        resultTimerRef.current = setTimeout(resumeScanner, 2000);
+        // SUPER-FAST AUTO-RESUME: 8.0s for High-Traffic Gates (Adjusted per user request)
+        resultTimerRef.current = setTimeout(resumeScanner, 8000);
 
       } else {
         // INFO OR VERIFY MODE
@@ -594,7 +594,7 @@ export default function ScannerPage() {
     // Play access denied sound (multiple beeps)
     audioService.playAccessDenied();
     if (resultTimerRef.current) clearTimeout(resultTimerRef.current);
-    resultTimerRef.current = setTimeout(resumeScanner, 3000);
+    resultTimerRef.current = setTimeout(resumeScanner, 8000);
   };
 
   const handleRedeem = async (count, scanOrder = null, scanTicket = null) => {
@@ -929,7 +929,7 @@ function ResultView({ config, result, onResume, onRedeem, isPublic }) {
           </div>
 
           <p className="mt-8 text-white/60 font-bold uppercase tracking-[0.4em] text-sm animate-pulse italic">
-            Scanning resuming in 5s...
+            Scanning resuming in 8s...
           </p>
         </div>
       </div>
@@ -985,7 +985,7 @@ function ResultView({ config, result, onResume, onRedeem, isPublic }) {
           {result.status === 'success' ? <CheckCircle className="w-16 h-16 shadow-[0_0_40px_rgba(16,185,129,0.3)]" /> : <Clock className="w-16 h-16" />}
         </div>
         <h2 className={`text-4xl font-black uppercase tracking-tight mb-2 ${result.status === 'success' ? 'text-emerald-400 shadow-text' : 'text-amber-400'}`}>
-          {result.status === 'success' ? 'Marked Present' : 'Already Marked'}
+          Access Granted
         </h2>
 
         {result.sessionName && (

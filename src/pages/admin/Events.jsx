@@ -34,7 +34,7 @@ import {
   Trash,
   CreditCard
 } from "lucide-react";
-import * as XLSX from "xlsx";
+
 import { extractTextFromPdf as parsePDFText } from "../../lib/pdfParser";
 import Button from "../../components/ui/Button";
 import Card, { CardHeader, CardContent } from "../../components/ui/Card";
@@ -55,6 +55,7 @@ import AttendanceStats from "../../components/accreditation/AttendanceStats";
 import AttendanceBadge from "../../components/accreditation/AttendanceBadge";
 import ExportModal from "../../components/ui/ExportModal";
 import { getInviteLinks, createInviteLink, updateInviteLink, toggleInviteLink, deleteInviteLink, getLinkStatus } from "../../lib/inviteLinksApi";
+import AuditLogView from "./events/AuditLogView";
 
 const DOCUMENT_OPTIONS = [
   { id: "picture", label: "Picture" },
@@ -816,6 +817,26 @@ export default function Events() {
             </div>
           );
         })()
+      ) : subpage === "audit-log" ? (
+        /* --- AUDIT LOG SUB-PAGE --- */
+        (() => {
+          const event = events.find(e => e.id === id);
+          if (!event) return null;
+          return (
+            <div className="space-y-6">
+              <div className="flex items-center gap-4 mb-4">
+                <button
+                  onClick={() => navigate(`/admin/events/${id}`)}
+                  className="p-2 bg-base-alt hover:bg-border rounded-xl text-muted hover:text-main transition-colors border border-border"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-2xl font-bold text-main">Scanner Audit Ledger</h2>
+              </div>
+              <AuditLogView event={event} />
+            </div>
+          );
+        })()
       ) : (
         /* --- DETAIL VIEW (DEFAULT) --- */
         (() => {
@@ -1084,6 +1105,13 @@ export default function Events() {
                   icon={Shield}
                   color="from-blue-600 to-cyan-500"
                   onClick={() => navigate(`/admin/events/${id}/terms`)}
+                />
+                <DetailActionCard 
+                  title="Scanner Audit Log" 
+                  description="View detailed real-time scan logs, summary by sport, and export to Excel"
+                  icon={Activity}
+                  color="from-rose-600 to-pink-500"
+                  onClick={() => navigate(`/admin/events/${id}/audit-log`)}
                 />
               </div>
             </motion.div>

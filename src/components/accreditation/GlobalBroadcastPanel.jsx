@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Globe, Upload, Save, Trash2, Clock, Users, Search, Check, X, AlertCircle, CheckCircle, Paperclip } from "lucide-react";
+import { Globe, Upload, Save, Trash2, Clock, Users, Search, Check, X, AlertCircle, CheckCircle, Paperclip, ChevronDown } from "lucide-react";
 import { EventSettingsAPI, BroadcastV2API, SportEventsAPI, GlobalSettingsAPI } from "../../lib/broadcastApi";
 import { AccreditationsAPI } from "../../lib/storage";
 import { supabase } from "../../lib/supabase";
@@ -14,8 +14,32 @@ const SUB_TABS = [
   { id: "athlete", label: "Athlete QR Broadcast", icon: Users }
 ];
 
+const INITIAL_DRAFT_TEMPLATE = {
+  general: { message: "", file: null },
+  targeted: { message: "", targets: [], zones: [], file: null },
+  athlete: { message: "", selectedAthletes: [], selectedClubs: [], selectedHeats: [], file: null }
+};
+
 export default function GlobalBroadcastPanel({ eventId, onToast }) {
   const [activeSubTab, setActiveSubTab] = useState("general");
+  
+  // Requirement: Make broadcast messages independent per event
+  const [eventDrafts, setEventDrafts] = useState({});
+
+  const currentDrafts = eventDrafts[eventId] || INITIAL_DRAFT_TEMPLATE;
+
+  const updateDraft = (tab, updates) => {
+    setEventDrafts(prev => {
+      const eventState = prev[eventId] || INITIAL_DRAFT_TEMPLATE;
+      return {
+        ...prev,
+        [eventId]: {
+          ...eventState,
+          [tab]: { ...eventState[tab], ...updates }
+        }
+      };
+    });
+  };
 
   return (
     <div id="global-broadcast-panel" className="space-y-4">
@@ -39,9 +63,30 @@ export default function GlobalBroadcastPanel({ eventId, onToast }) {
         })}
       </div>
 
-      {activeSubTab === "general" && <GeneralBroadcastPage eventId={eventId} onToast={onToast} />}
-      {activeSubTab === "targeted" && <TargetedBroadcastPage eventId={eventId} onToast={onToast} />}
-      {activeSubTab === "athlete" && <AthleteQRBroadcastPage eventId={eventId} onToast={onToast} />}
+      {activeSubTab === "general" && (
+        <GeneralBroadcastPage 
+          eventId={eventId} 
+          onToast={onToast} 
+          draft={currentDrafts.general}
+          setDraft={(d) => updateDraft("general", d)}
+        />
+      )}
+      {activeSubTab === "targeted" && (
+        <TargetedBroadcastPage 
+          eventId={eventId} 
+          onToast={onToast} 
+          draft={currentDrafts.targeted}
+          setDraft={(d) => updateDraft("targeted", d)}
+        />
+      )}
+      {activeSubTab === "athlete" && (
+        <AthleteQRBroadcastPage 
+          eventId={eventId} 
+          onToast={onToast} 
+          draft={currentDrafts.athlete}
+          setDraft={(d) => updateDraft("athlete", d)}
+        />
+      )}
     </div>
   );
 }
@@ -72,17 +117,24 @@ function SuccessOverlay({ show, message, onClose }) {
 }
 
 /* ─── General Broadcast Page (Strictly Global) ──────────────── */
-function GeneralBroadcastPage({ eventId, onToast }) {
-  const [message, setMessage] = useState("");
+function GeneralBroadcastPage({ eventId, onToast, draft, setDraft }) {
+  const { message, file: attachmentFile } = draft;
+  const setMessage = (m) => setDraft({ message: m });
+  const setAttachmentFile = (f) => setDraft({ file: f });
+  
   const [saving, setSaving] = useState(false);
   const [msgUpdatedAt, setMsgUpdatedAt] = useState(null);
   const [successInfo, setSuccessInfo] = useState(null);
-  const [attachmentFile, setAttachmentFile] = useState(null);
   const [currentAttachment, setCurrentAttachment] = useState(null);
   const [deletingAttachment, setDeletingAttachment] = useState(false);
   const attachInputRef = useRef(null);
 
-  useEffect(() => { if (eventId) loadLatest(); }, [eventId]);
+  // Requirement: Load latest from DB only if draft is currently empty for this event
+  useEffect(() => { 
+    if (eventId && !message) {
+      loadLatest(); 
+    }
+  }, [eventId]);
 
   const loadLatest = async () => {
     try {
@@ -99,7 +151,8 @@ function GeneralBroadcastPage({ eventId, onToast }) {
       
       if (broadcasts?.[0]) {
         const b = broadcasts[0];
-        setMessage(b.message || "");
+        // Only update if current message is still empty (to avoid races)
+        setDraft({ message: b.message || "" });
         setMsgUpdatedAt(b.created_at);
         if (b.attachment_url) setCurrentAttachment({ url: b.attachment_url, name: b.attachment_name, broadcastId: b.id });
       }
@@ -117,6 +170,7 @@ function GeneralBroadcastPage({ eventId, onToast }) {
       }
       await BroadcastV2API.sendGlobal(message, eventId, attachmentUrl, attachmentName, null, null);
       setSuccessInfo("General broadcast sent to all participants.");
+      // Refresh to get the latest sent info
       loadLatest();
     } catch (err) { onToast?.("Failed: " + err.message, "error"); }
     finally { setSaving(false); }
@@ -126,7 +180,16 @@ function GeneralBroadcastPage({ eventId, onToast }) {
     <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-xl space-y-6">
       <SuccessOverlay show={!!successInfo} message={successInfo} onClose={() => setSuccessInfo(null)} />
       <div className="flex items-center gap-2"><Globe className="w-5 h-5 text-emerald-400" /><h3 className="text-xl font-bold text-white uppercase tracking-tight">General Broadcast</h3></div>
-      <div className="p-4 bg-emerald-500/10 rounded-2xl border border-emerald-500/20"><p className="text-emerald-400 text-xs font-black uppercase tracking-widest">Audience: Everyone</p></div>
+      <div className="p-4 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
+        <div className="flex justify-between items-center">
+          <p className="text-emerald-400 text-xs font-black uppercase tracking-widest">Audience: Everyone</p>
+          {msgUpdatedAt && (
+            <p className="text-[10px] text-gray-500 font-bold uppercase tracking-tight">
+              Last Broadcast: {new Date(msgUpdatedAt).toLocaleString()}
+            </p>
+          )}
+        </div>
+      </div>
       <textarea value={message} onChange={e => setMessage(e.target.value)} rows={5} placeholder="Message for everyone..." className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:border-emerald-500 outline-none transition-all resize-none" />
       <div className="flex items-center gap-3">
         <label className="flex items-center gap-2 cursor-pointer px-4 py-2 bg-gray-900 border border-gray-700 rounded-xl text-sm text-gray-300">
@@ -141,14 +204,17 @@ function GeneralBroadcastPage({ eventId, onToast }) {
 }
 
 /* ─── Targeted Broadcast Page (Roles & Zones) ────────────────── */
-function TargetedBroadcastPage({ eventId, onToast }) {
-  const [message, setMessage] = useState("");
-  const [targets, setTargets] = useState([]);
-  const [selectedZones, setSelectedZones] = useState([]);
+function TargetedBroadcastPage({ eventId, onToast, draft, setDraft }) {
+  const { message, targets, zones, file: attachmentFile } = draft;
+  
+  const setMessage = (m) => setDraft({ message: m });
+  const setTargets = (t) => setDraft({ targets: typeof t === 'function' ? t(targets) : t });
+  const setSelectedZones = (z) => setDraft({ zones: typeof z === 'function' ? z(zones) : z });
+  const setAttachmentFile = (f) => setDraft({ file: f });
+  
   const [eventZones, setEventZones] = useState([]);
   const [saving, setSaving] = useState(false);
   const [successInfo, setSuccessInfo] = useState(null);
-  const [attachmentFile, setAttachmentFile] = useState(null);
 
   useEffect(() => {
     if (eventId) {
@@ -161,7 +227,7 @@ function TargetedBroadcastPage({ eventId, onToast }) {
 
   const saveMessage = async () => {
     if (!message.trim()) { onToast?.("Enter a message", "error"); return; }
-    if (targets.length === 0 && selectedZones.length === 0) { onToast?.("Select at least one role or zone", "error"); return; }
+    if (targets.length === 0 && zones.length === 0) { onToast?.("Select at least one role or zone", "error"); return; }
     setSaving(true);
     try {
       let attachmentUrl = null, attachmentName = null;
@@ -169,9 +235,9 @@ function TargetedBroadcastPage({ eventId, onToast }) {
         const { url, filename } = await uploadToStorage(attachmentFile, "broadcast-attachments");
         attachmentUrl = url; attachmentName = attachmentFile.name || filename;
       }
-      await BroadcastV2API.sendGlobal(message, eventId, attachmentUrl, attachmentName, targets, selectedZones);
-      setSuccessInfo(`Targeted broadcast sent to ${targets.length} roles and ${selectedZones.length} zones.`);
-      setMessage(""); setTargets([]); setSelectedZones([]); setAttachmentFile(null);
+      await BroadcastV2API.sendGlobal(message, eventId, attachmentUrl, attachmentName, targets, zones);
+      setSuccessInfo(`Targeted broadcast sent to ${targets.length} roles and ${zones.length} zones.`);
+      setDraft({ message: "", targets: [], zones: [], file: null });
     } catch (err) { onToast?.("Failed: " + err.message, "error"); }
     finally { setSaving(false); }
   };
@@ -190,7 +256,7 @@ function TargetedBroadcastPage({ eventId, onToast }) {
         <div className="space-y-3">
           <span className="text-xs font-bold text-gray-500 uppercase tracking-widest px-1">Zones</span>
           <div className="flex flex-wrap gap-2">{eventZones.map(zone => (
-            <button key={zone.code} onClick={() => toggleZone(zone.code)} className={`px-4 py-2 rounded-xl border text-xs font-bold transition-all ${selectedZones.includes(zone.code) ? "bg-orange-600 border-orange-500 text-white shadow-lg" : "bg-gray-900 border-gray-700 text-gray-400"}`}><span className="opacity-60 mr-1.5">{zone.code}</span>{zone.name}</button>
+            <button key={zone.code} onClick={() => toggleZone(zone.code)} className={`px-4 py-2 rounded-xl border text-xs font-bold transition-all ${zones.includes(zone.code) ? "bg-orange-600 border-orange-500 text-white shadow-lg" : "bg-gray-900 border-gray-700 text-gray-400"}`}><span className="opacity-60 mr-1.5">{zone.code}</span>{zone.name}</button>
           ))}</div>
         </div>
       </div>
@@ -208,21 +274,30 @@ function TargetedBroadcastPage({ eventId, onToast }) {
 }
 
 /* ─── Athlete Broadcast Page (Granular Multi-Select) ────────── */
-function AthleteQRBroadcastPage({ eventId, onToast }) {
-  const [message, setMessage] = useState("");
+function AthleteQRBroadcastPage({ eventId, onToast, draft, setDraft }) {
+  const { 
+    message, 
+    selectedAthletes, 
+    selectedClubs, 
+    selectedHeats, 
+    file: attachmentFile 
+  } = draft;
+
+  const setMessage = (m) => setDraft({ message: m });
+  const setSelectedAthletes = (sa) => setDraft({ selectedAthletes: typeof sa === 'function' ? sa(selectedAthletes) : sa });
+  const setSelectedClubs = (sc) => setDraft({ selectedClubs: typeof sc === 'function' ? sc(selectedClubs) : sc });
+  const setSelectedHeats = (sh) => setDraft({ selectedHeats: typeof sh === 'function' ? sh(selectedHeats) : sh });
+  const setAttachmentFile = (f) => setDraft({ file: f });
+
   const [search, setSearch] = useState("");
   const [clubs, setClubs] = useState([]);
-  const [selectedClubs, setSelectedClubs] = useState([]);
   const [sportEvents, setSportEvents] = useState([]);
-  const [selectedHeats, setSelectedHeats] = useState([]);
   const [athletes, setAthletes] = useState([]);
-  const [selectedAthletes, setSelectedAthletes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [successInfo, setSuccessInfo] = useState(null);
-  const [attachmentFile, setAttachmentFile] = useState(null);
   const [currentAttachment, setCurrentAttachment] = useState(null); // { url, name, broadcastId }
   const [deletingAttachment, setDeletingAttachment] = useState(false);
   const attachInputRef = useRef(null);
