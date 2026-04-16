@@ -15,13 +15,14 @@ import {
   Trophy,
   FileDown,
   LayoutList,
-  Layers
+  Layers,
+  Calendar
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import Card, { CardHeader, CardContent } from "../../components/ui/Card";
 import EmptyState from "../../components/ui/EmptyState";
 import { useToast } from "../../components/ui/Toast";
-import { AuditAPI } from "../../lib/storage";
+import { AuditAPI, EventsAPI } from "../../lib/storage";
 import { AttendanceAPI } from "../../lib/attendanceApi";
 import { formatDate } from "../../lib/utils";
 
@@ -53,14 +54,28 @@ export default function AuditLog() {
   const [viewMode, setViewMode] = useState("raw"); // raw | summary
   const [logs, setLogs] = useState([]);
   const [scannerLogs, setScannerLogs] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [selectedEventId, setSelectedEventId] = useState("");
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const toast = useToast();
 
   useEffect(() => {
+    const fetchEvents = async () => {
+      try {
+        const data = await EventsAPI.getAll();
+        setEvents(data || []);
+      } catch (err) {
+        console.error("Failed to fetch events:", err);
+      }
+    };
+    fetchEvents();
+  }, []);
+
+  useEffect(() => {
     if (activeTab === "system") loadLogs();
     else loadScannerLogs();
-  }, [activeTab]);
+  }, [activeTab, selectedEventId]);
 
   const loadLogs = async () => {
     setLoading(true);
@@ -78,8 +93,10 @@ export default function AuditLog() {
   const loadScannerLogs = async () => {
     setLoading(true);
     try {
-      const data = await AttendanceAPI.getScanLogs(1000);
-      setScannerLogs(data);
+      const data = selectedEventId 
+        ? await AttendanceAPI.getScanLogsByEvent(selectedEventId, 1000)
+        : await AttendanceAPI.getScanLogs(1000);
+      setScannerLogs(data || []);
     } catch (err) {
       console.error("Scanner log error:", err);
       toast.error("Failed to load scanner logs");
@@ -236,6 +253,35 @@ export default function AuditLog() {
           </button>
         </div>
       </div>
+
+      {activeTab === 'scanner' && (
+        <div className="flex flex-col md:flex-row items-start md:items-center gap-4 bg-base-alt/40 p-4 rounded-2xl border border-border/50">
+          <div className="flex items-center gap-3 text-muted">
+            <Calendar className="w-4 h-4" />
+            <span className="text-[10px] font-black uppercase tracking-widest">Filter By Event</span>
+          </div>
+          <select
+            value={selectedEventId}
+            onChange={(e) => setSelectedEventId(e.target.value)}
+            className="bg-base border border-border rounded-xl px-4 py-2 text-xs font-bold text-main outline-none focus:ring-1 focus:ring-primary/40 min-w-[240px] appearance-none cursor-pointer hover:border-primary/20 transition-all"
+          >
+            <option value="">All Events (Global Ledger)</option>
+            {events.map((event) => (
+              <option key={event.id} value={event.id}>
+                {event.name}
+              </option>
+            ))}
+          </select>
+          {selectedEventId && (
+            <button 
+              onClick={() => setSelectedEventId("")}
+              className="text-[9px] font-black uppercase tracking-widest text-primary hover:text-primary-400 transition-colors"
+            >
+              Clear Filter
+            </button>
+          )}
+        </div>
+      )}
 
       <Card className="border-border ring-0 shadow-2xl">
         <CardHeader className="bg-base-alt/50 border-b border-border/50">

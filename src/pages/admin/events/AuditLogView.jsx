@@ -75,6 +75,23 @@ export default function AuditLogView({ event }) {
     return summary;
   }, [logs, zones]);
 
+  // Summarize by Sport
+  const sportSummary = useMemo(() => {
+    const summary = {};
+    const sports = event.sportList || ["Swimming"];
+    sports.forEach(s => { summary[s] = 0; });
+
+    logs.forEach(log => {
+      const athleteSports = log.accreditations?.selected_sports || [];
+      athleteSports.forEach(s => {
+        if (summary[s] !== undefined) {
+          summary[s]++;
+        }
+      });
+    });
+    return summary;
+  }, [logs, event.sportList]);
+
   const filteredLogs = useMemo(() => {
     return logs.filter(log => {
       const name = `${log.accreditations?.first_name || ''} ${log.accreditations?.last_name || ''}`.toLowerCase();
@@ -133,29 +150,49 @@ export default function AuditLogView({ event }) {
 
   return (
     <div className="space-y-6">
-      {/* Summary Cards - Comprehensive Area Coverage */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-3">
-        <div className="bg-[#1e293b] border border-gray-700/50 p-3 rounded-xl shadow-sm hover:shadow-md transition-shadow group">
-          <div className="flex items-center gap-2 mb-1">
-            <div className="p-1.5 bg-sky-500/10 rounded-lg text-sky-400 group-hover:bg-sky-500/20 transition-colors">
-              <Activity className="w-3.5 h-3.5" />
+      {/* Summary Cards - Comprehensive Coverage */}
+      <div className="space-y-4">
+        <label className="text-[10px] font-black uppercase tracking-[0.2em] text-muted ml-1">Live Scan Statistics</label>
+        
+        {/* Main Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-3">
+          <div className="bg-[#1e293b] border border-gray-700/50 p-3 rounded-xl shadow-sm hover:shadow-md transition-shadow group">
+            <div className="flex items-center gap-2 mb-1">
+              <div className="p-1.5 bg-sky-500/10 rounded-lg text-sky-400 group-hover:bg-sky-500/20 transition-colors">
+                <Activity className="w-3.5 h-3.5" />
+              </div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Total Scans</span>
             </div>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Total Scans</span>
+            <p className="text-xl font-black text-white leading-tight">{logs.length}</p>
           </div>
-          <p className="text-xl font-black text-white leading-tight">{logs.length}</p>
+
+          {Object.entries(areaSummary).map(([area, count]) => (
+            <div key={area} className="bg-[#1e293b] border border-gray-700/50 p-3 rounded-xl shadow-sm hover:shadow-md transition-shadow group">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="p-1.5 bg-emerald-500/10 rounded-lg text-emerald-400 group-hover:bg-emerald-500/20 transition-colors">
+                  <MapPin className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 truncate" title={area}>{area}</span>
+              </div>
+              <p className="text-xl font-black text-white leading-tight">{count}</p>
+            </div>
+          ))}
         </div>
 
-        {Object.entries(areaSummary).map(([area, count]) => (
-          <div key={area} className="bg-[#1e293b] border border-gray-700/50 p-3 rounded-xl shadow-sm hover:shadow-md transition-shadow group">
-            <div className="flex items-center gap-2 mb-1">
-              <div className="p-1.5 bg-emerald-500/10 rounded-lg text-emerald-400 group-hover:bg-emerald-500/20 transition-colors">
-                <MapPin className="w-3.5 h-3.5" />
+        {/* Sport Specific Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-3">
+          {Object.entries(sportSummary).map(([sport, count]) => (
+            <div key={sport} className="bg-slate-900/40 border border-slate-800 p-3 rounded-xl hover:bg-slate-800/40 transition-all group">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="p-1.5 bg-amber-500/10 rounded-lg text-amber-400 group-hover:bg-amber-500/20 transition-colors">
+                  <Trophy className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 truncate" title={sport}>{sport}</span>
               </div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 truncate" title={area}>{area}</span>
+              <p className="text-lg font-black text-slate-200 leading-tight">{count}</p>
             </div>
-            <p className="text-xl font-black text-white leading-tight">{count}</p>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
       {/* Filters & Actions */}

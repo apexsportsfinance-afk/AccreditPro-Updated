@@ -157,35 +157,32 @@ export default function Accreditations() {
     const loadEventData = async () => {
       setLoading(true);
       try {
-        const [accData, zoneData] = await Promise.all([
+        // APX-PERF: All 6 data calls in parallel instead of waterfall
+        const results = await Promise.allSettled([
           AccreditationsAPI.getByEventId(selectedEvent),
-          ZonesAPI.getByEventId(selectedEvent)
+          ZonesAPI.getByEventId(selectedEvent),
+          supabase.from("event_categories").select("*, category:categories(*)").eq("event_id", selectedEvent),
+          GlobalSettingsAPI.getClubs(selectedEvent),
+          GlobalSettingsAPI.get(`event_${selectedEvent}_front_bg`),
+          GlobalSettingsAPI.get(`event_${selectedEvent}_category_documents`)
         ]);
-        setAccreditations(accData);
-        setZones(zoneData);
+
+        const [accResult, zoneResult, ecResult, clubResult, bgResult, catDocsResult] = results;
+
+        if (accResult.status === "fulfilled") setAccreditations(accResult.value);
+        else { console.error("Failed to load accreditations:", accResult.reason); toast.error("Failed to load accreditations."); }
+
+        if (zoneResult.status === "fulfilled") setZones(zoneResult.value);
+        if (ecResult.status === "fulfilled" && ecResult.value?.data) setEventCategories(ecResult.value.data);
+        if (clubResult.status === "fulfilled") setClubs(clubResult.value || []);
+        else setClubs([]);
+        if (bgResult.status === "fulfilled") setFrontBackgroundUrl(bgResult.value || "");
+        else setFrontBackgroundUrl("");
+        if (catDocsResult.status === "fulfilled") setCategoryDocuments(catDocsResult.value || {});
+        else setCategoryDocuments({});
+
         searchParams.set("event", selectedEvent);
         setSearchParams(searchParams);
-        try {
-          const { data: ecData } = await supabase
-            .from("event_categories")
-            .select("*, category:categories(*)")
-            .eq("event_id", selectedEvent);
-          if (ecData) setEventCategories(ecData);
-        } catch (ecErr) {
-          console.warn("Event categories (non-critical):", ecErr);
-        }
-        try {
-          const clubData = await GlobalSettingsAPI.getClubs(selectedEvent);
-          setClubs(clubData);
-        } catch { setClubs([]); }
-        try {
-          const frontBg = await GlobalSettingsAPI.get(`event_${selectedEvent}_front_bg`);
-          setFrontBackgroundUrl(frontBg || "");
-        } catch { setFrontBackgroundUrl(""); }
-        try {
-          const catDocs = await GlobalSettingsAPI.get(`event_${selectedEvent}_category_documents`);
-          setCategoryDocuments(catDocs || {});
-        } catch { setCategoryDocuments({}); }
       } catch (error) {
         console.error("Failed to load event data:", error);
         toast.error("Failed to load accreditations. Please try again.");
@@ -363,30 +360,23 @@ export default function Accreditations() {
         badgeNumber = `${prefix}-${String((existingCount || 0) + 1).padStart(3, "0")}`;
       }
       const zoneCodeString = approveData.zoneCodes.join(",");
-      await AccreditationsAPI.approve(accreditation.id, zoneCodeString, badgeNumber);
-      await refreshAccreditations();
+      // APX-PERF: .approve() returns the updated record — no need to re-fetch
+      const approvedRecord = await AccreditationsAPI.approve(accreditation.id, zoneCodeString, badgeNumber);
+
+      // APX-PERF: Surgical local state update instead of full table refresh
+      setAccreditations(prev => prev.map(a => a.id === accreditation.id ? approvedRecord : a));
+
+      const realAccreditationId = approvedRecord?.accreditationId || accreditation.accreditationId;
+      const updatedAcc = {
+        ...accreditation,
+        ...approvedRecord,
+        badgeNumber,
+        zoneCode: zoneCodeString,
+        status: "approved",
+        accreditationId: realAccreditationId
+      };
 
       if (approveData.sendEmail) {
-        // Fetch the saved record from DB to get the real accreditation_id (ACC-2025-xxx)
-        // The QR code MUST encode the same value the verify page looks up by.
-        let freshAccreditation = null;
-        try {
-          freshAccreditation = await AccreditationsAPI.getById(accreditation.id);
-        } catch (fetchErr) {
-          console.warn("[Approve] Failed to re-fetch accreditation after approve:", fetchErr);
-        }
-
-        // Use the DB-driven accreditationId for the QR; fall back to local if fetch fails
-        const realAccreditationId = freshAccreditation?.accreditationId || accreditation.accreditationId;
-        const updatedAcc = {
-          ...accreditation,
-          ...(freshAccreditation || {}),
-          badgeNumber,
-          zoneCode: zoneCodeString,
-          status: "approved",
-          accreditationId: realAccreditationId
-        };
-
         let pdfData = null;
         try {
           pdfData = await generatePdfAttachment(updatedAcc, eventData, zones);
@@ -503,9 +493,10 @@ export default function Accreditations() {
     try {
       const zoneCodeString = approveData.zoneCodes.join(",");
       await AccreditationsAPI.bulkApprove(selectedRows, zoneCodeString);
+      // APX-PERF: Single refresh — no second getByEventId call
       await refreshAccreditations();
       if (approveData.sendEmail) {
-        const updatedAccData = await AccreditationsAPI.getByEventId(selectedEvent);
+        // Use the freshly-refreshed local state instead of another DB round-trip
         let emailsSent = 0;
         let emailsFailed = 0;
         
@@ -513,7 +504,7 @@ export default function Accreditations() {
         for (let i = 0; i < selectedRows.length; i += CHUNK_SIZE) {
           const chunkIds = selectedRows.slice(i, i + CHUNK_SIZE);
           await Promise.all(chunkIds.map(async (rowId) => {
-            const acc = updatedAccData.find((a) => a.id === rowId);
+            const acc = accreditations.find((a) => a.id === rowId);
             if (!acc || !acc.email) return;
             const eventData = events.find((e) => e.id === acc.eventId);
             

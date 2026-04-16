@@ -393,6 +393,22 @@ export const AccreditationsAPI = {
     const PAGE_SIZE = 1000;
 
     try {
+      // APX-PERF: Fast path — single query for ≤1000 records (covers 95% of events)
+      let fastQuery = supabase
+        .from("accreditations")
+        .select(ACCREDITATION_LIST_COLUMNS)
+        .eq("event_id", eventId)
+        .order("created_at", { ascending: false })
+        .limit(PAGE_SIZE + 1); // +1 to detect if more exist
+      if (status) fastQuery = fastQuery.eq("status", status);
+
+      const { data: fastData, error: fastError } = await fastQuery;
+
+      if (!fastError && fastData && fastData.length <= PAGE_SIZE) {
+        return fastData.map(mapAccreditationFromDB);
+      }
+
+      // Slow path: paginated fetch for large datasets (>1000 records)
       let countQuery = supabase
         .from("accreditations")
         .select("*", { count: "exact", head: true })

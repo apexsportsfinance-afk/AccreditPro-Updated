@@ -9,6 +9,13 @@ export default defineConfig({
     strictPort: false,
     allowedHosts: true,
     hmr: { overlay: true },
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        secure: false
+      }
+    },
     watch: {
       // usePolling removed — it causes memory exhaustion on Windows
       // Native file watching (default) is stable and fast
@@ -23,6 +30,18 @@ export default defineConfig({
   build: {
     target: "esnext",
     minify: "esbuild",
-    cssMinify: true
+    cssMinify: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-supabase': ['@supabase/supabase-js'],
+          'vendor-pdf': ['jspdf', 'html2canvas'],
+          'vendor-charts': ['recharts'],
+          'vendor-excel': ['xlsx'],
+          'vendor-motion': ['motion'],
+        }
+      }
+    }
   }
 });

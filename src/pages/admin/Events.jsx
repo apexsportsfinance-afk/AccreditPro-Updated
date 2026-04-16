@@ -32,7 +32,8 @@ import {
   Lock,
   QrCode,
   Trash,
-  CreditCard
+  CreditCard,
+  ShieldAlert
 } from "lucide-react";
 
 import { extractTextFromPdf as parsePDFText } from "../../lib/pdfParser";
@@ -1108,9 +1109,9 @@ export default function Events() {
                 />
                 <DetailActionCard 
                   title="Scanner Audit Log" 
-                  description="View detailed real-time scan logs, summary by sport, and export to Excel"
-                  icon={Activity}
-                  color="from-rose-600 to-pink-500"
+                  description="View all scan attempts, download CSV/Excel logs, and view sport summaries"
+                  icon={ShieldAlert}
+                  color="from-amber-600 to-orange-500"
                   onClick={() => navigate(`/admin/events/${id}/audit-log`)}
                 />
               </div>

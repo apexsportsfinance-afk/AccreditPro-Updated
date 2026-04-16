@@ -3,7 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-d
 import { ToastProvider } from "./components/ui/Toast";
 import { AuthProvider } from "./contexts/AuthContext";
 import ScrollToTop from "./components/layout/ScrollToTop";
-import AdminLayout from "./components/layout/AdminLayout";
+const AdminLayout = lazy(() => import("./components/layout/AdminLayout"));
 import { LayoutProvider } from "./contexts/LayoutContext";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { Loader2 } from "lucide-react";

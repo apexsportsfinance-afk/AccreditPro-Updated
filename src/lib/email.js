@@ -3,7 +3,17 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 import { supabase } from "./supabase";
 
+// APX-PERF: Email template cache — avoids repeated identical DB queries during bulk operations
+const templateCache = new Map();
+const CACHE_TTL = 60000; // 60 seconds
+
 export const getEmailTemplate = async (templateType, eventId = null) => {
+  const cacheKey = `${templateType}_${eventId || 'global'}`;
+  const cached = templateCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    return cached.data;
+  }
+
   try {
     // 1. Try to get event-specific template
     if (eventId) {
@@ -15,7 +25,9 @@ export const getEmailTemplate = async (templateType, eventId = null) => {
         .maybeSingle();
       
       if (!eventError && eventData) {
-        return { subject: eventData.subject, body: eventData.body };
+        const result = { subject: eventData.subject, body: eventData.body };
+        templateCache.set(cacheKey, { data: result, ts: Date.now() });
+        return result;
       }
     }
 
@@ -27,8 +39,13 @@ export const getEmailTemplate = async (templateType, eventId = null) => {
       .is("event_id", null)
       .maybeSingle();
 
-    if (globalError || !globalData) return null;
-    return { subject: globalData.subject, body: globalData.body };
+    if (globalError || !globalData) {
+      templateCache.set(cacheKey, { data: null, ts: Date.now() });
+      return null;
+    }
+    const result = { subject: globalData.subject, body: globalData.body };
+    templateCache.set(cacheKey, { data: result, ts: Date.now() });
+    return result;
   } catch (err) {
     console.error("[Email] getEmailTemplate error:", err);
     return null;

@@ -1,5 +1,22 @@
-import html2canvas from "html2canvas";
-import { jsPDF } from "jspdf";
+// Lazy-loaded modules — only fetched when first needed
+let _html2canvas = null;
+let _jsPDF = null;
+
+async function getHtml2Canvas() {
+  if (!_html2canvas) {
+    const mod = await import("html2canvas");
+    _html2canvas = mod.default;
+  }
+  return _html2canvas;
+}
+
+async function getJsPDF() {
+  if (!_jsPDF) {
+    const mod = await import("jspdf");
+    _jsPDF = mod.jsPDF;
+  }
+  return _jsPDF;
+}
 
 export const PDF_SIZES = {
   a4:   { width: 210, height: 297, label: "A4 (210x297 mm)", dpi: 72 },
@@ -42,6 +59,7 @@ const waitForQRInElement = (element, timeoutMs = 8000) =>
  * Uses cloneNode to avoid detaching the live React element.
  */
 const captureElement = async (elementId, scale = 3) => {
+  const html2canvas = await getHtml2Canvas();
   const element = document.getElementById(elementId);
   if (!element) throw new Error(`Element #${elementId} not found`);
 
@@ -104,6 +122,7 @@ const captureElement = async (elementId, scale = 3) => {
 };
 
   export const downloadCapturedPDF = async (frontId, backId, fileName, sizeKey = "card") => {
+  const jsPDF = await getJsPDF();
   try {
     const { canvas: frontCanvas, width, height } = await captureElement(frontId, 3);
     const pdfWidth = width;
@@ -150,6 +169,7 @@ const captureElement = async (elementId, scale = 3) => {
  * Perfect for multi-ticket orders.
  */
 export const downloadMultiPagePDF = async (elementIds, fileName, orientation = 'l') => {
+  const jsPDF = await getJsPDF();
   if (!elementIds || elementIds.length === 0) return;
   try {
     let pdf = null;
@@ -187,6 +207,7 @@ export const downloadMultiPagePDF = async (elementIds, fileName, orientation = '
 };
 
 export const openCapturedPDFInTab = async (frontId, backId, sizeKey = "card") => {
+  const jsPDF = await getJsPDF();
   const { canvas, width, height } = await captureElement(frontId, 3);
 
   const pdf = new jsPDF({
@@ -208,6 +229,7 @@ export const openCapturedPDFInTab = async (frontId, backId, sizeKey = "card") =>
 };
 
 export const getCapturedPDFBlob = async (frontId, backId, sizeKey = "card") => {
+  const jsPDF = await getJsPDF();
   const { canvas, width, height } = await captureElement(frontId, 3);
 
   const pdf = new jsPDF({
