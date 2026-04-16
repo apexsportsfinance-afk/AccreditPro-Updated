@@ -10,11 +10,14 @@ import {
   FileCode,
   Files,
   MoreVertical,
-  ChevronRight
+  ChevronRight,
+  Filter
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { GlobalSettingsAPI } from "../../lib/broadcastApi";
+import { EventsAPI } from "../../lib/storage";
 import Button from "../ui/Button";
+import SearchableSelect from "../ui/SearchableSelect";
 
 const getFileIcon = (type) => {
   const t = (type || '').toLowerCase();
@@ -27,25 +30,50 @@ export default function OfficialDocumentsTab({ eventId, onToast }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [sports, setSports] = useState(["General"]);
+  const [selectedSport, setSelectedSport] = useState("General");
 
   useEffect(() => {
     if (!eventId) return;
-    loadDocs();
+    loadAll();
   }, [eventId]);
 
-  const loadDocs = async () => {
+  const loadAll = async () => {
     setLoading(true);
     try {
+      // 1. Load Sports for this event
+      let eventSports = [];
+      const gsSports = await GlobalSettingsAPI.get(`event_${eventId}_sport`);
+      
+      if (gsSports) {
+        if (typeof gsSports === 'string' && gsSports.startsWith('[')) {
+          try { eventSports = JSON.parse(gsSports); } catch(e) { eventSports = [gsSports]; }
+        } else if (Array.isArray(gsSports)) {
+          eventSports = gsSports;
+        } else if (typeof gsSports === 'string') {
+          eventSports = [gsSports];
+        }
+      }
+
+      // Fallback to table column if GS is empty
+      if (eventSports.length === 0) {
+        const event = await EventsAPI.getById(eventId);
+        if (event?.sportList && event.sportList.length > 0) {
+          eventSports = event.sportList;
+        }
+      }
+
+      setSports(["General", ...eventSports]);
+
+      // 2. Load Documents
       const data = await GlobalSettingsAPI.get(`event_${eventId}_official_docs`);
       if (data) {
-        const parsed = JSON.parse(data);
-        console.log("Official Documents Loaded:", parsed.length);
-        setDocs(parsed);
+        setDocs(JSON.parse(data));
       } else {
         setDocs([]);
       }
     } catch (err) {
-      console.error("Failed to load documents:", err);
+      console.error("Failed to load official documents:", err);
       setDocs([]);
     } finally {
       setLoading(false);
@@ -79,7 +107,6 @@ export default function OfficialDocumentsTab({ eventId, onToast }) {
       const uint8 = new Uint8Array(arrayBuffer);
       const filename = `official-docs/${eventId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
       
-      // Determine content type
       let contentType = "application/octet-stream";
       if (ext === 'pdf') contentType = "application/pdf";
       else if (ext === 'csv') contentType = "text/csv";
@@ -88,10 +115,7 @@ export default function OfficialDocumentsTab({ eventId, onToast }) {
 
       const { data, error } = await supabase.storage
         .from("accreditation-files")
-        .upload(filename, uint8, { 
-          upsert: true, 
-          contentType 
-        });
+        .upload(filename, uint8, { upsert: true, contentType });
 
       if (error) throw error;
 
@@ -105,7 +129,8 @@ export default function OfficialDocumentsTab({ eventId, onToast }) {
         type: ext,
         size: (file.size / 1024 / 1024).toFixed(2) + " MB",
         url: urlData.publicUrl,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        sport: selectedSport
       };
 
       const latestData = await GlobalSettingsAPI.get(`event_${eventId}_official_docs`);
@@ -147,6 +172,12 @@ export default function OfficialDocumentsTab({ eventId, onToast }) {
     }
   };
 
+  // Filtering Logic — same as Result Documents
+  const filteredDocs = docs.filter(doc => {
+    const docSport = doc.sport || "General";
+    return docSport === selectedSport;
+  });
+
   return (
     <div className="space-y-6">
       {/* Upload Header Area */}
@@ -183,15 +214,35 @@ export default function OfficialDocumentsTab({ eventId, onToast }) {
         </div>
       </div>
 
+      {/* Sport Filter Dropdown — matches Result Documents */}
+      <div className="flex flex-col gap-3 max-w-md">
+        <div className="flex items-center gap-2 px-2">
+          <Filter className="w-3 h-3 text-slate-500" />
+          <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Filter by Sport ({sports.length})</span>
+        </div>
+        <div className="px-2">
+          <SearchableSelect
+            value={selectedSport}
+            onChange={(e) => setSelectedSport(e.target.value)}
+            options={sports.map(sport => ({
+              label: `${sport} (${docs.filter(d => (d.sport || "General") === sport).length})`,
+              value: sport
+            }))}
+            placeholder="Select a sport to filter documents"
+            className="w-full"
+          />
+        </div>
+      </div>
+
       {loading ? (
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 xl:grid-cols-12 gap-3">
           {[1,2,3,4,5,6].map(i => (
             <div key={i} className="h-24 bg-slate-900/40 border border-white/5 rounded-md animate-pulse" />
           ))}
         </div>
-      ) : docs.length > 0 ? (
+      ) : filteredDocs.length > 0 ? (
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 xl:grid-cols-12 gap-2.5">
-          {docs.map(doc => (
+          {filteredDocs.map(doc => (
             <div 
               key={doc.id} 
               className="bg-glass border border-white/5 p-2.5 rounded-md group hover:border-primary/30 hover:bg-slate-900/80 transition-all duration-300 shadow-lg"
@@ -242,8 +293,8 @@ export default function OfficialDocumentsTab({ eventId, onToast }) {
           <div className="p-5 bg-slate-900/50 rounded-full mb-6">
             <FileCode className="w-12 h-12 text-slate-700" />
           </div>
-          <h3 className="text-white/60 font-black uppercase tracking-widest text-sm">No official documents yet</h3>
-          <p className="text-slate-600 text-xs mt-2">Upload your first PDF, CSV, or Excel sheet to get started.</p>
+          <h3 className="text-white/60 font-black uppercase tracking-widest text-sm">No documents for {selectedSport}</h3>
+          <p className="text-slate-600 text-xs mt-2">Upload official documents specifically for {selectedSport}.</p>
         </div>
       )}
     </div>

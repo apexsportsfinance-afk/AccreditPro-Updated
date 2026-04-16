@@ -469,6 +469,19 @@ export default function VerifyAccreditation() {
     });
   }, [technicalDocs, allocatedSports]);
 
+  // Filter Official Documents based on Athlete's Allocated Sports
+  const visibleOfficialDocs = useMemo(() => {
+    if (!officialDocs) return [];
+    return officialDocs.filter(doc => {
+      // If document is "General" or has no sport tag, show to everyone
+      if (!doc.sport || doc.sport === "General") return true;
+      
+      // Check if the document's sport is in the athlete's allocated sports
+      const normalizedDocSport = doc.sport.trim().toUpperCase();
+      return allocatedSports.some(s => s.trim().toUpperCase() === normalizedDocSport);
+    });
+  }, [officialDocs, allocatedSports]);
+
   const containerVariants = {
     hidden: { opacity: 0, y: 20 },
     visible: {
@@ -943,13 +956,34 @@ export default function VerifyAccreditation() {
             </div>
 
             {/* Event Resources */}
-            {(officialDocs.length > 0 || technicalDocs.length > 0 || safetyDocs.length > 0) && (
+            {(visibleOfficialDocs.length > 0 || visibleTechnicalDocs.length > 0 || safetyDocs.length > 0) && (
               <div className="mt-10 space-y-6">
-                 {officialDocs.length > 0 && (
+                 {visibleOfficialDocs.length > 0 && (
                    <div className="space-y-3">
                      <h4 className="text-[10px] font-black text-white/40 uppercase tracking-[0.2em] px-2">Official Event Documents</h4>
                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                       {officialDocs.map((doc, idx) => (<a key={idx} href={doc.url} target="_blank" rel="noopener noreferrer" className="bg-slate-800/50 border border-white/5 p-4 rounded-xl flex items-center justify-between"><div className="flex flex-col"><span className="text-[8px] text-cyan-400 font-black uppercase">{doc.type || 'PDF'}</span><span className="text-xs font-bold text-white uppercase">{doc.name}</span></div><FileText className="w-4 h-4 text-white/20" /></a>))}
+                       {visibleOfficialDocs.map((doc, idx) => (
+                          <motion.a
+                            key={idx}
+                            href={doc.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                            className="flex items-center justify-between p-4 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/10 transition-all group"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="p-2 bg-cyan-500/10 rounded-xl group-hover:bg-cyan-500/20 transition-colors">
+                                <Download className="w-4 h-4 text-cyan-400" />
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-[9px] font-black text-white/30 uppercase leading-none mb-1">Official Profile {doc.sport && doc.sport !== "General" && <span className="text-[8px] ml-2 font-black text-cyan-400 bg-cyan-400/10 border border-cyan-400/20 px-1 rounded whitespace-nowrap">{doc.sport}</span>}</span>
+                                <span className="text-xs font-bold text-white/90 truncate max-w-[140px] uppercase leading-tight">{doc.name}</span>
+                              </div>
+                            </div>
+                            <ExternalLink className="w-4 h-4 text-white/20 group-hover:text-cyan-400 transition-colors" />
+                          </motion.a>
+                        ))}
                      </div>
                    </div>
                  )}
