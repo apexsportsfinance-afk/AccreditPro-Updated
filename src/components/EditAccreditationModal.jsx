@@ -185,7 +185,7 @@ export default function EditAccreditationModal({
         documents: mergedDocuments,
         badgeColor: accreditation.badgeColor || "#2563eb",
         zoneCodes: zc,
-        selectedSports: accreditation.selectedSports || []
+        selectedSports: accreditation.selectedSports || accreditation.selected_sports || []
       });
 
       setOriginalRole(role);
@@ -364,7 +364,7 @@ export default function EditAccreditationModal({
     return getBadgePrefix(role);
   };
 
-  const isAthlete = formData.role?.toLowerCase() === "athlete";
+  const isAthlete = formData.role?.toLowerCase()?.includes("athlete");
   const age = getAge();
   const isApproved = accreditation?.status === "approved";
   const roleChanged = isApproved && formData.role && formData.role !== originalRole;
@@ -793,24 +793,28 @@ export default function EditAccreditationModal({
               placeholder="Enter club or organization name"
             />
           )}
-        </div>
 
-        {/* Sports Section - Shown for Athletes or if event has sports */}
-        {isAthlete && currentEvent?.sportList && currentEvent.sportList.length > 0 && (
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold text-white border-b border-slate-700 pb-2">Participating Sports</h3>
-            <div className="relative z-[70]">
-              <label className="block text-sm font-bold text-slate-500 uppercase tracking-widest mb-2 px-1">Selected Sports *</label>
-              <MultiSearchableSelect
-                options={currentEvent.sportList.map(s => ({ value: s, label: s }))}
-                value={formData.selectedSports || []}
-                onChange={(val) => setFormData(prev => ({ ...prev, selectedSports: val }))}
-                placeholder="Select your sport(s)"
-                light
-              />
+          {/* Sports Section - Simplified for Athletes */}
+          {isAthlete && (
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-white border-b border-slate-700 pb-2 flex items-center gap-2">
+                <Plus className="w-4 h-4 text-cyan-400" />
+                Participating Sports
+              </h3>
+
+              {/* Edit Selector (handles both display and editing) */}
+              <div className="relative z-[70]">
+                <MultiSearchableSelect
+                  options={(currentEvent?.sportList || currentEvent?.sport_list || []).map(s => ({ value: s, label: s }))}
+                  value={formData.selectedSports || []}
+                  onChange={(val) => setFormData(prev => ({ ...prev, selectedSports: val }))}
+                  placeholder="Select/change sport(s)"
+                  light
+                />
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Zone Access Section */}
         <div className="space-y-3">

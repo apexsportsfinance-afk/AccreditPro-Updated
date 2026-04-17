@@ -2,6 +2,7 @@ import React, { useEffect } from "react";
 import { Outlet, useNavigate, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import { useAuth } from "../../contexts/AuthContext";
+import BackgroundProgress from "../accreditation/BackgroundProgress";
 
 export default function AdminLayout() {
   const { isAuthenticated, loading, isSuperAdmin } = useAuth();
@@ -46,6 +47,7 @@ export default function AdminLayout() {
       
       <main className="ml-20 lg:ml-[280px] min-h-screen transition-all duration-300 relative z-10">
         <div className="p-lg lg:p-xl max-w-[1600px] mx-auto">
+          <BackgroundProgress />
           <Outlet />
         </div>
       </main>

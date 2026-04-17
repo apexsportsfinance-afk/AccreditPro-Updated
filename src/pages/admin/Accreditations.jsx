@@ -46,6 +46,7 @@ import {
 } from "../../lib/storage";
 import { GlobalSettingsAPI } from "../../lib/broadcastApi";
 import { supabase } from "../../lib/supabase";
+import { useBackground } from "../../contexts/BackgroundContext";
 import {
   sendApprovalEmail,
   sendRejectionEmail
@@ -79,6 +80,7 @@ export default function Accreditations() {
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
   const { canAccessEvent } = useAuth();
+  const { addToQueue } = useBackground();
 
   const [events, setEvents] = useState([]);
   const [accreditations, setAccreditations] = useState([]);
@@ -97,6 +99,23 @@ export default function Accreditations() {
   const [pdfPreviewModal, setPdfPreviewModal] = useState({ open: false, accreditation: null });
   const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false);
   const [badgeGeneratorModal, setBadgeGeneratorModal] = useState({ open: false, accreditation: null });
+  /* ─── Render Participating Sports Badges ─── */
+  const renderParticipatingSports = (accreditation) => {
+    const sports = accreditation?.selected_sports || accreditation?.selectedSports;
+    if (!sports || !Array.isArray(sports) || sports.length === 0) {
+      return <p className="text-slate-500 italic text-sm">No sports selected</p>;
+    }
+    return (
+      <div className="flex flex-wrap gap-2">
+        {sports.map((sport, idx) => (
+          <Badge key={idx} variant="primary" className="bg-primary-500/10 text-primary-400 border-primary-500/20">
+            {sport}
+          </Badge>
+        ))}
+      </div>
+    );
+  };
+
   const [approving, setApproving] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [selectedPdfSize, setSelectedPdfSize] = useState("a6");
@@ -342,85 +361,26 @@ export default function Accreditations() {
       toast.error("Please select zone access");
       return;
     }
-    setApproving(true);
+
     try {
       const accreditation = approveModal.accreditation;
-      const eventData = events.find((e) => e.id === accreditation.eventId);
-      const role = accreditation.role || "Unknown";
-      const prefix = ROLE_BADGE_PREFIXES[role] || role.substring(0, 3).toUpperCase() || "GEN";
-      const isReApproval = accreditation.status === "approved";
-      let badgeNumber = accreditation.badgeNumber;
-      if (!isReApproval || !badgeNumber) {
-        const { count: existingCount } = await supabase
-          .from("accreditations")
-          .select("id", { count: "exact", head: true })
-          .eq("event_id", accreditation.eventId)
-          .eq("role", role)
-          .eq("status", "approved");
-        badgeNumber = `${prefix}-${String((existingCount || 0) + 1).padStart(3, "0")}`;
-      }
-      const zoneCodeString = approveData.zoneCodes.join(",");
-      // APX-PERF: .approve() returns the updated record — no need to re-fetch
-      const approvedRecord = await AccreditationsAPI.approve(accreditation.id, zoneCodeString, badgeNumber);
 
-      // APX-PERF: Surgical local state update instead of full table refresh
-      setAccreditations(prev => prev.map(a => a.id === accreditation.id ? approvedRecord : a));
-
-      const realAccreditationId = approvedRecord?.accreditationId || accreditation.accreditationId;
-      const updatedAcc = {
-        ...accreditation,
-        ...approvedRecord,
-        badgeNumber,
-        zoneCode: zoneCodeString,
-        status: "approved",
-        accreditationId: realAccreditationId
-      };
-
-      if (approveData.sendEmail) {
-        let pdfData = null;
-        try {
-          pdfData = await generatePdfAttachment(updatedAcc, eventData, zones);
-        } catch (pdfErr) {
-          console.warn("[Approve] PDF generation failed:", pdfErr);
+      // Sequential background processing via Global Queue
+      addToQueue({
+        id: accreditation.id,
+        accreditation,
+        eventId: selectedEvent,
+        approveData,
+        onSuccess: (updated) => {
+          setAccreditations(prev => prev.map(a => a.id === updated.id ? updated : a));
         }
+      });
 
-        let emailResult = { success: false };
-        try {
-          emailResult = await sendApprovalEmail({
-            to: accreditation.email,
-            name: `${accreditation.firstName} ${accreditation.lastName}`,
-            eventName: eventData?.name || "Event",
-            eventLocation: eventData?.location || "",
-            eventDates: eventData ? `${eventData.startDate} - ${eventData.endDate}` : "",
-            role: accreditation.role,
-            accreditationId: realAccreditationId || badgeNumber,
-            badgeNumber: badgeNumber,
-            zoneCode: zoneCodeString,
-            reportingTimes: eventData?.reportingTimes || "",
-            eventId: accreditation.eventId,
-            pdfBase64: pdfData?.pdfBase64 || null,
-            pdfFileName: pdfData?.pdfFileName || null
-          });
-        } catch (emailErr) {
-          console.error("[Approve] Email send error:", emailErr);
-        }
-
-        if (emailResult.success) {
-          toast.success(`Accreditation ${isReApproval ? "re-approved" : "approved"} and email with PDF sent!`);
-        } else {
-          console.warn("[Approve] Email failed:", emailResult.error);
-          toast.success(`Accreditation ${isReApproval ? "re-approved" : "approved"}! Email notification may have failed.`);
-        }
-      } else {
-        toast.success(`Accreditation ${isReApproval ? "re-approved" : "approved"}! (Email skipped)`);
-      }
       setApproveModal({ open: false, accreditation: null });
-
-    } catch (error) {
-      console.error("Approval error:", error);
-      toast.error("Failed to complete approval. Please try again.");
-    } finally {
-      setApproving(false);
+      toast("Added to processing queue", "info");
+    } catch (err) {
+      console.error("Queue error:", err);
+      toast.error("Failed to add to processing queue");
     }
   };
 
@@ -1046,7 +1006,8 @@ export default function Accreditations() {
                 medicalUrl: data.medicalUrl,
                 customMessage: data.customMessage,
                 badgeColor: data.badgeColor,
-                zoneCode: data.zoneCode || (data.zoneCodes ? data.zoneCodes.join(",") : "")
+                zoneCode: data.zoneCode || (data.zoneCodes ? data.zoneCodes.join(",") : ""),
+                selected_sports: data.selectedSports
               };
               updatePayload.expiresAt = data.expiresAt !== undefined ? data.expiresAt : null;
 
@@ -1221,6 +1182,14 @@ export default function Accreditations() {
               </div>
             </div>
 
+            <div className="border-t border-slate-700/50 pt-6">
+              <h4 className="text-lg font-medium text-white mb-3 flex items-center gap-2">
+                <Plus className="w-4 h-4 text-cyan-400" />
+                Participating Sports
+              </h4>
+              {renderParticipatingSports(viewModal.accreditation)}
+            </div>
+
             <div className="flex gap-3">
               <Button
                 variant="secondary"
@@ -1324,21 +1293,13 @@ export default function Accreditations() {
 
           <div className="space-y-4">
             {/* Participating Sports */}
-            {approveModal.accreditation?.selectedSports && approveModal.accreditation.selectedSports.length > 0 && (
-              <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
-                <h4 className="text-lg font-medium text-white mb-3 flex items-center gap-2">
-                  <Plus className="w-4 h-4 text-cyan-400" />
-                  Participating Sports
-                </h4>
-                <div className="flex flex-wrap gap-2">
-                  {approveModal.accreditation.selectedSports.map(sport => (
-                    <span key={sport} className="px-3 py-1 bg-cyan-500/20 text-cyan-400 text-sm font-bold rounded-full border border-cyan-500/30">
-                      {sport}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
+            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+              <h4 className="text-lg font-medium text-white mb-3 flex items-center gap-2">
+                <Plus className="w-4 h-4 text-cyan-400" />
+                Participating Sports
+              </h4>
+              {renderParticipatingSports(approveModal.accreditation)}
+            </div>
             <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
               <h4 className="text-lg font-medium text-white mb-3 flex items-center gap-2">
                 <FileText className="w-4 h-4 text-cyan-400" />

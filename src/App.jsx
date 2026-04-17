@@ -6,6 +6,7 @@ import ScrollToTop from "./components/layout/ScrollToTop";
 const AdminLayout = lazy(() => import("./components/layout/AdminLayout"));
 import { LayoutProvider } from "./contexts/LayoutContext";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { BackgroundProvider } from "./contexts/BackgroundContext";
 import { Loader2 } from "lucide-react";
 
 const Home = lazy(() => import("./pages/public/Home"));
@@ -52,7 +53,8 @@ export default function App() {
         <AuthProvider>
           <ThemeProvider>
             <LayoutProvider>
-            <Suspense fallback={<PageLoader />}>
+              <BackgroundProvider>
+                <Suspense fallback={<PageLoader />}>
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/login" element={<Login />} />
@@ -85,7 +87,8 @@ export default function App() {
 
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
-          </Suspense>
+            </Suspense>
+              </BackgroundProvider>
             </LayoutProvider>
           </ThemeProvider>
         </AuthProvider>
