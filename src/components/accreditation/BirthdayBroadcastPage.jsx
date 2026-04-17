@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Gift, Save, Trash2, Users, Search, CheckCircle, Paperclip } from "lucide-react";
 
-import { BroadcastV2API } from "../../lib/broadcastApi";
+import { BroadcastV2API, GlobalSettingsAPI } from "../../lib/broadcastApi";
 import { AccreditationsAPI } from "../../lib/storage";
 import { uploadToStorage } from "../../lib/uploadToStorage";
 import Button from "../ui/Button";
@@ -15,13 +15,35 @@ export default function BirthdayBroadcastPage({ eventId, onToast, draft, setDraf
   const [loading, setLoading] = useState(false);
   const [birthdayPeople, setBirthdayPeople] = useState([]);
   const [sending, setSending] = useState(false);
+  const [savingTemplate, setSavingTemplate] = useState(false);
   const [successInfo, setSuccessInfo] = useState(null);
 
   useEffect(() => {
     if (eventId) {
       loadBirthdayPeople();
+      loadTemplate();
     }
   }, [eventId]);
+
+  const loadTemplate = async () => {
+    try {
+      const saved = await GlobalSettingsAPI.get(`birthday_template_event_${eventId}`);
+      if (saved && !message) {
+        setMessage(saved);
+      }
+    } catch (err) { console.error("Template load failed", err); }
+  };
+
+  const saveTemplate = async () => {
+    if (!message.trim()) return;
+    setSavingTemplate(true);
+    try {
+      await GlobalSettingsAPI.set(`birthday_template_event_${eventId}`, message);
+      onToast?.("Default birthday template saved", "success");
+    } catch (err) { 
+      onToast?.("Failed to save template: " + err.message, "error"); 
+    } finally { setSavingTemplate(false); }
+  };
 
   const loadBirthdayPeople = async () => {
     setLoading(true);
@@ -40,9 +62,14 @@ export default function BirthdayBroadcastPage({ eventId, onToast, draft, setDraf
 
       setBirthdayPeople(filtered);
       
-      // 3. Pre-fill message if empty
+      // 3. Pre-fill message if empty and no saved template
       if (!message && filtered.length > 0) {
-        setMessage("Happy Birthday from the Apex Sports Team! 🎉 We hope you have a fantastic day at the event!");
+        const saved = await GlobalSettingsAPI.get(`birthday_template_event_${eventId}`);
+        if (saved) {
+          setMessage(saved);
+        } else {
+          setMessage("Happy Birthday from the Apex Sports Team! 🎉 We hope you have a fantastic day at the event!");
+        }
       }
     } catch (err) {
       console.error(err);
@@ -50,7 +77,9 @@ export default function BirthdayBroadcastPage({ eventId, onToast, draft, setDraf
     } finally {
       setLoading(false);
     }
-  };  const replacePlaceholders = (text, person) => {
+  };
+
+  const replacePlaceholders = (text, person) => {
     if (!text) return "";
     return text
       .replace(/\{firstName\}/g, person.firstName || "")
@@ -144,7 +173,18 @@ export default function BirthdayBroadcastPage({ eventId, onToast, draft, setDraf
           <div className="space-y-4 pt-2">
             <div className="flex justify-between items-end px-1">
               <label className="block text-gray-500 text-[10px] font-black uppercase tracking-widest">Customize Celebration Message</label>
-              <span className="text-[10px] text-gray-600 font-bold uppercase tracking-widest">{message?.length || 0}/1000</span>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={saveTemplate}
+                  disabled={savingTemplate || !message.trim()}
+                  className="flex items-center gap-1.5 text-[10px] text-pink-400 hover:text-white transition-colors uppercase font-black tracking-widest disabled:opacity-50"
+                  title="Make this the permanent template for this event"
+                >
+                  <Save className={`w-3 h-3 ${savingTemplate ? 'animate-spin' : ''}`} />
+                  Set as Default
+                </button>
+                <span className="text-[10px] text-gray-600 font-bold uppercase tracking-widest">{message?.length || 0}/1000</span>
+              </div>
             </div>
             
             <div className="relative group">
